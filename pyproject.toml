@@ -1,0 +1,21 @@
+[project]
+name = "flow_lens"
+version = "0.1.0"
+description = ""
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+fix = true
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+typeCheckingMode = "basic"
+reportMissingImports = false
+pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
