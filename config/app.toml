@@ -1,0 +1,51 @@
+[adapters.binance_spot]
+type = "binance_spot_ws"
+symbols = [
+  "ASTER",
+  "ZEC",
+  "NEAR",
+  "FIL",
+  "XPL",
+  "AAVE",
+  "USELESS",
+  "SOL",
+  "PUMP",
+  "LINEA",
+  "EIGEN",
+  "ONDO",
+  "LINK",
+  "OP",
+  "LTC",
+  "PEPE",
+  "FLOKI",
+  "DOGE",
+  "SHIB",
+  "AVAX",
+  "BNB",
+]
+
+[adapters.binance_perp]
+type = "binance_perp_ws"
+symbols = [
+  "ASTER",
+  "ZEC",
+  "NEAR",
+  "FIL",
+  "XPL",
+  "AAVE",
+  "USELESS",
+  "SOL",
+  "PUMP",
+  "LINEA",
+  "EIGEN",
+  "ONDO",
+  "LINK",
+  "OP",
+  "LTC",
+  "PEPE",
+  "FLOKI",
+  "DOGE",
+  "SHIB",
+  "AVAX",
+  "BNB",
+]

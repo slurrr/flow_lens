@@ -13,9 +13,8 @@ Behavior:
   - Lean appears only on update (1–2 frames), then settles (no idle animation)
 """
 import curses
-import time
-import math
 import random
+import time
 from dataclasses import dataclass
 
 # ----------------------------

@@ -172,6 +172,10 @@ Execution Constraint:
 - After any implementation phase, `ruff check .` and `pyright` MUST pass
 - If uncertain how to satisfy a rule, STOP and ASK
 
+Pyright note:
+- Use `scripts/pyright.sh` (runs the bundled Node CLI) to avoid pyright-python wrapper hangs.
+- If you run via Python, use `python scripts/pyright.py`.
+
 ## Change Discipline
 
 - No speculative refactors

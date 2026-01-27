@@ -11,6 +11,9 @@ The following are tunable system constants governing time resolution, effort nor
 - Rolling window length N (in ticks)
 - Effort floor multiplier α
 
+### Effectiveness Scaling
+- tanh compression factor k
+
 ### Dispersion Measurement
 - Dispersion metric ∈ {Hill number, entropy}
 
@@ -18,6 +21,7 @@ The following are tunable system constants governing time resolution, effort nor
 - Δ = 2s
 - N = 60 ticks
 - α = 0.2
+- k = 1.0
 - Dispersion metric = Hill number
 
 ## Rationale

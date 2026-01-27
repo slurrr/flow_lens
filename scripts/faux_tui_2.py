@@ -9,10 +9,10 @@ Behavior:
 - Absorbed force   -> dot pulses (size only)
 """
 
-from dataclasses import dataclass
 import math
 import random
 import time
+from dataclasses import dataclass
 
 from rich.console import Console
 from rich.live import Live
