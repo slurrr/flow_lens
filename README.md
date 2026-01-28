@@ -38,8 +38,6 @@ Do not turn Flow Lens into:
 - A charting platform
 - An indicator collection
 
-If a feature helps make a trade decision directly, it does not belong here.
-
 ---
 
 ## Mental Model

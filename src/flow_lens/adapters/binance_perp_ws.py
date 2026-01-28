@@ -28,11 +28,13 @@ class BinancePerpWSAdapter(BaseAdapter):
                 async for message in ws:
                     payload = json.loads(message)
                     if "code" in payload:
+                        self._mark_message(dropped=True)
                         LOGGER.error("Binance perp error: %s", payload)
                         raise RuntimeError("Binance perp stream error.")
                     data = payload.get("data", {})
                     symbol = data.get("s")
                     if symbol is None:
+                        self._mark_message(dropped=True)
                         continue
                     price = float(data["p"])
                     quantity = float(data["q"])
@@ -46,6 +48,7 @@ class BinancePerpWSAdapter(BaseAdapter):
                         price=price,
                     )
                     self._mark_event(symbol, timestamp)
+                    self._mark_message(dropped=False)
                     yield AdapterEvent(symbol=symbol, event=event)
             finally:
                 self._mark_disconnected()

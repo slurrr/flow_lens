@@ -90,6 +90,8 @@ def _run(stdscr: "curses.window") -> None:
                 last_state,
                 status_spot=None,
                 status_perp=None,
+                spot_stats=None,
+                perp_stats=None,
                 search_mode=input_state.search_mode,
                 search_buffer=input_state.search_buffer,
             )

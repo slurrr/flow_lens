@@ -22,6 +22,8 @@ symbols = [
   "SHIB",
   "AVAX",
   "BNB",
+  "BTC",
+  "ETH",
 ]
 
 [adapters.binance_perp]
@@ -48,4 +50,10 @@ symbols = [
   "SHIB",
   "AVAX",
   "BNB",
+  "BTC",
+  "ETH",
+  
 ]
+
+[runtime]
+tbt_window_multiplier = 4.0

@@ -18,4 +18,5 @@ class FlowFrame:
     symbol: str
     timestamp: int
     price: float
+    price_start: float
     efforts: Sequence[EffortContribution]

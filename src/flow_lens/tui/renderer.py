@@ -4,7 +4,7 @@ import curses
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
-from flow_lens.adapters.base import AdapterStatus
+from flow_lens.adapters.base import AdapterStats, AdapterStatus
 from flow_lens.engine.state_engine import StateSnapshot
 
 CursesWindow: TypeAlias = Any
@@ -28,6 +28,8 @@ class Renderer:
         *,
         status_spot: AdapterStatus | None = None,
         status_perp: AdapterStatus | None = None,
+        spot_stats: AdapterStats | None = None,
+        perp_stats: AdapterStats | None = None,
         search_mode: bool = False,
         search_buffer: str = "",
     ) -> None:
@@ -35,7 +37,7 @@ class Renderer:
         maxy, maxx = stdscr.getmaxyx()
 
         header = symbol if not search_mode else f"{symbol}   /{search_buffer}"
-        self._draw_header(stdscr, header, status_spot, status_perp, maxx)
+        self._draw_header(stdscr, header, maxx, row=0)
 
         map_top = 2
         map_left = max(0, (maxx - self._config.width) // 2)
@@ -60,37 +62,95 @@ class Renderer:
         self._draw_halo(stdscr, dot_x, dot_y, state.halo_bin, map_left, map_top, maxx, maxy)
         self._draw_dot(stdscr, dot_x, dot_y, state.size_bin, maxx, maxy)
 
+        self._draw_status_bar(
+            stdscr,
+            status_spot=status_spot,
+            status_perp=status_perp,
+            spot_stats=spot_stats,
+            perp_stats=perp_stats,
+            map_left=map_left,
+            map_right=map_right,
+            map_bottom=map_bottom,
+            maxy=maxy,
+            maxx=maxx,
+        )
+
         stdscr.refresh()
 
     def _draw_header(
         self,
         stdscr: CursesWindow,
         header: str,
+        maxx: int,
+        *,
+        row: int = 0,
+    ) -> None:
+        if row >= stdscr.getmaxyx()[0]:
+            return
+        stdscr.addstr(row, 0, header[: maxx - 1])
+
+    def _draw_status_bar(
+        self,
+        stdscr: CursesWindow,
+        *,
         status_spot: AdapterStatus | None,
         status_perp: AdapterStatus | None,
+        spot_stats: AdapterStats | None,
+        perp_stats: AdapterStats | None,
+        map_left: int,
+        map_right: int,
+        map_bottom: int,
+        maxy: int,
         maxx: int,
     ) -> None:
-        if status_spot is None and status_perp is None:
-            stdscr.addstr(0, 0, header[: maxx - 1])
+        top = map_bottom + 11
+        content = top + 1
+        bottom = top + 2
+        if maxx <= 0 or bottom >= maxy:
             return
-
+        spot_color = 0
+        perp_color = 0
         if curses.has_colors():
             self._ensure_colors()
-            offset = 0
-            for status in (status_spot, status_perp):
-                if status is None:
-                    continue
-                color = _status_color(status)
-                stdscr.addstr(0, offset, "●", curses.color_pair(color))
-                offset += 1
-            stdscr.addstr(0, offset, f" {header}"[: maxx - 1])
-        else:
-            prefix = "".join(
-                _status_text(status)
-                for status in (status_spot, status_perp)
-                if status is not None
-            )
-            stdscr.addstr(0, 0, f"{prefix} {header}"[: maxx - 1])
+            if status_spot is not None:
+                spot_color = curses.color_pair(_status_color(status_spot))
+            if status_perp is not None:
+                perp_color = curses.color_pair(_status_color(status_perp))
+        segments: list[tuple[str, int]] = [
+            (" ", 0),
+            ("Spot", spot_color),
+            (" | Active: ", 0),
+            (_active_text(spot_stats), 0),
+            (" | TBT: ", 0),
+            (_tbt_text(spot_stats), 0),
+            (" | Reconnects: ", 0),
+            (_reconnect_text(spot_stats), 0),
+            (" | ", 0),
+            ("Perp", perp_color),
+            (" | Active: ", 0),
+            (_active_text(perp_stats), 0),
+            (" | TBT: ", 0),
+            (_tbt_text(perp_stats), 0),
+            (" | Reconnects: ", 0),
+            (_reconnect_text(perp_stats), 0),
+            (" ", 0),
+        ]
+        text_len = sum(len(text) for text, _ in segments)
+        inner_width = min(maxx - 2, text_len)
+        if inner_width <= 0:
+            return
+        box_width = inner_width + 2
+        x0 = min(max(0, map_left), maxx - box_width)
+        if x0 < 0:
+            x0 = 0
+
+        stdscr.addstr(top, x0, "┌" + "─" * inner_width + "┐")
+        stdscr.addstr(bottom, x0, "└" + "─" * inner_width + "┘")
+        y = content
+        x = x0 + 1
+        maxx_cap = min(maxx, x0 + 1 + inner_width)
+        for text, attr in segments:
+            x = _addstr_limited(stdscr, y, x, text, maxx_cap, attr)
 
     def _ensure_colors(self) -> None:
         if self._colors_ready:
@@ -114,8 +174,8 @@ class Renderer:
         maxy: int,
         maxx: int,
     ) -> None:
-        top = "ACCEPTED"
-        bot = "REJECTED"
+        top = "ACCEPTING"
+        bot = "REJECTING"
         left = "PERP"
         right = "SPOT"
 
@@ -215,6 +275,42 @@ def _status_text(status: AdapterStatus) -> str:
     if status == AdapterStatus.STALE:
         return "Y"
     return "R"
+
+
+def _active_text(stats: AdapterStats | None) -> str:
+    if stats is None:
+        return "0/0"
+    return f"{stats.active_pairs}/{stats.total_pairs}"
+
+
+def _reconnect_text(stats: AdapterStats | None) -> str:
+    if stats is None:
+        return "0"
+    return str(stats.reconnect_count)
+
+
+def _tbt_text(stats: AdapterStats | None) -> str:
+    if stats is None or stats.tbt_ms is None:
+        return "n/a"
+    if stats.tbt_ms < 1000:
+        return f"{stats.tbt_ms:.0f}ms"
+    return f"{stats.tbt_ms / 1000:.1f}s"
+
+
+def _addstr_limited(
+    stdscr: CursesWindow, y: int, x: int, text: str, maxx: int, attr: int = 0
+) -> int:
+    if x >= maxx - 1:
+        return x
+    available = maxx - x - 1
+    if available <= 0:
+        return x
+    chunk = text[:available]
+    if attr:
+        stdscr.addstr(y, x, chunk, attr)
+    else:
+        stdscr.addstr(y, x, chunk)
+    return x + len(chunk)
 
 
 def _halo_radius(halo_bin: int) -> int:

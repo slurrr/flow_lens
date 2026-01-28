@@ -23,6 +23,7 @@ from flow_lens.engine.state_engine import StateEngine, StateSnapshot
 from flow_lens.models.event import Event
 from flow_lens.symbols import (
     BinanceSymbolResolver,
+    QuotePair,
     SymbolMaps,
     build_symbol_maps,
     log_resolution,
@@ -37,6 +38,7 @@ class RuntimeState:
     last_state: dict[str, StateSnapshot | None]
     pending: dict[str, list[Event]]
     symbol_maps: SymbolMaps
+    last_event_ms: dict[str, int | None]
 
 
 def main() -> None:
@@ -66,8 +68,11 @@ def _run(stdscr: "curses.window") -> None:
     queue_events: queue.Queue[AdapterEvent] = queue.Queue()
     supervisor = AdapterSupervisor(queue_events)
     supervisor.start(
-        spot_symbols=list(symbol_maps.spot_base_to_actual.values()),
-        perp_symbols=list(symbol_maps.perp_base_to_actual.values()),
+        spot_symbols=_flatten(symbol_maps.spot_base_to_actual),
+        spot_quotes=symbol_maps.spot_actual_to_quote,
+        quote_pairs=symbol_maps.quote_pairs,
+        quote_rates=symbol_maps.quote_rates,
+        perp_symbols=_flatten(symbol_maps.perp_base_to_actual),
     )
 
     runtime = _init_runtime(base_symbols, window_ms, symbol_maps)
@@ -77,9 +82,8 @@ def _run(stdscr: "curses.window") -> None:
     last_update = time.monotonic()
     last_frame = last_update
     start_time = time.monotonic()
-    last_resolve = time.monotonic()
     reported_missing = False
-
+    reported_still_missing = False
     while True:
         key = stdscr.getch()
         if key in (ord("q"), ord("Q")):
@@ -93,28 +97,47 @@ def _run(stdscr: "curses.window") -> None:
         if now - last_update >= update_interval_s:
             last_update = now
             now_ms = int(time.time() * 1000)
-            _update_state(runtime, now_ms)
+            tbt_cutoffs, tbt_windows = _build_tbt_settings(
+                runtime,
+                supervisor,
+                window_ms,
+                config.tbt_window_multiplier,
+            )
+            _update_state(runtime, now_ms, tbt_cutoffs, tbt_windows)
 
         if not reported_missing and now - start_time > 30:
-            _report_missing(runtime, supervisor)
+            _report_missing(runtime, supervisor, prefix="No events yet")
             reported_missing = True
-
-        if now - last_resolve > 15 * 60:
-            last_resolve = now
-            _refresh_resolution(config, runtime, supervisor)
+        if not reported_still_missing and now - start_time > 300:
+            _report_missing(runtime, supervisor, prefix="Missing")
+            reported_still_missing = True
 
         if now - last_frame >= 1 / 30.0:
             last_frame = now
             symbol = input_state.symbol
             now_ms = int(time.time() * 1000)
-            status_spot = _adapter_status(symbol, now_ms, supervisor.spot, runtime.symbol_maps.spot_base_to_actual)
-            status_perp = _adapter_status(symbol, now_ms, supervisor.perp, runtime.symbol_maps.perp_base_to_actual)
+            status_spot = _adapter_status(
+                symbol, now_ms, supervisor.spot, runtime.symbol_maps.spot_base_to_actual
+            )
+            status_perp = _adapter_status(
+                symbol, now_ms, supervisor.perp, runtime.symbol_maps.perp_base_to_actual
+            )
+            spot_stats = None
+            perp_stats = None
+            spot_actuals = runtime.symbol_maps.spot_base_to_actual.get(symbol, [])
+            perp_actuals = runtime.symbol_maps.perp_base_to_actual.get(symbol, [])
+            if supervisor.spot is not None:
+                spot_stats = supervisor.spot.stats_for(now_ms, symbols=spot_actuals)
+            if supervisor.perp is not None:
+                perp_stats = supervisor.perp.stats_for(now_ms, symbols=perp_actuals)
             renderer.draw(
                 stdscr,
                 symbol,
                 runtime.last_state.get(symbol),
                 status_spot=status_spot,
                 status_perp=status_perp,
+                spot_stats=spot_stats,
+                perp_stats=perp_stats,
                 search_mode=input_state.search_mode,
                 search_buffer=input_state.search_buffer,
             )
@@ -140,16 +163,44 @@ class AdapterSupervisor:
         self.spot: BinanceSpotWSAdapter | None = None
         self.perp: BinancePerpWSAdapter | None = None
 
-    def start(self, *, spot_symbols: list[str], perp_symbols: list[str]) -> None:
+    def start(
+        self,
+        *,
+        spot_symbols: list[str],
+        spot_quotes: dict[str, str],
+        quote_pairs: dict[str, QuotePair],
+        quote_rates: dict[str, float],
+        perp_symbols: list[str],
+    ) -> None:
         self._thread.start()
         self._ready.wait(timeout=5)
-        self.update_symbols(spot_symbols=spot_symbols, perp_symbols=perp_symbols)
+        self.update_symbols(
+            spot_symbols=spot_symbols,
+            spot_quotes=spot_quotes,
+            quote_pairs=quote_pairs,
+            quote_rates=quote_rates,
+            perp_symbols=perp_symbols,
+        )
 
-    def update_symbols(self, *, spot_symbols: list[str], perp_symbols: list[str]) -> None:
+    def update_symbols(
+        self,
+        *,
+        spot_symbols: list[str],
+        spot_quotes: dict[str, str],
+        quote_pairs: dict[str, QuotePair],
+        quote_rates: dict[str, float],
+        perp_symbols: list[str],
+    ) -> None:
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(
-            self._restart(spot_symbols=spot_symbols, perp_symbols=perp_symbols),
+            self._restart(
+                spot_symbols=spot_symbols,
+                spot_quotes=spot_quotes,
+                quote_pairs=quote_pairs,
+                quote_rates=quote_rates,
+                perp_symbols=perp_symbols,
+            ),
             self._loop,
         )
 
@@ -159,9 +210,22 @@ class AdapterSupervisor:
         self._ready.set()
         self._loop.run_forever()
 
-    async def _restart(self, *, spot_symbols: list[str], perp_symbols: list[str]) -> None:
+    async def _restart(
+        self,
+        *,
+        spot_symbols: list[str],
+        spot_quotes: dict[str, str],
+        quote_pairs: dict[str, QuotePair],
+        quote_rates: dict[str, float],
+        perp_symbols: list[str],
+    ) -> None:
         await self._cancel_tasks()
-        spot = BinanceSpotWSAdapter(symbols=spot_symbols)
+        spot = BinanceSpotWSAdapter(
+            symbols=spot_symbols,
+            symbol_quotes=spot_quotes,
+            quote_pairs=quote_pairs,
+            quote_rates=quote_rates,
+        )
         perp = BinancePerpWSAdapter(symbols=perp_symbols)
         with self._lock:
             self.spot = spot
@@ -192,6 +256,7 @@ def _init_runtime(symbols: list[str], window_ms: int, symbol_maps: SymbolMaps) -
     loops: dict[str, EngineLoop] = {}
     last_state: dict[str, StateSnapshot | None] = {}
     pending: dict[str, list[Event]] = {symbol: [] for symbol in symbols}
+    last_event_ms: dict[str, int | None] = {symbol: None for symbol in symbols}
 
     for symbol in symbols:
         buffer = RollingEventBuffer(window_delta_ms=window_ms)
@@ -199,7 +264,13 @@ def _init_runtime(symbols: list[str], window_ms: int, symbol_maps: SymbolMaps) -
         loops[symbol] = EngineLoop(symbol=symbol, buffer=buffer, engine=engine)
         last_state[symbol] = None
 
-    return RuntimeState(loops=loops, last_state=last_state, pending=pending, symbol_maps=symbol_maps)
+    return RuntimeState(
+        loops=loops,
+        last_state=last_state,
+        pending=pending,
+        symbol_maps=symbol_maps,
+        last_event_ms=last_event_ms,
+    )
 
 
 def _drain_events(queue_events: queue.Queue[AdapterEvent], runtime: RuntimeState) -> None:
@@ -212,27 +283,53 @@ def _drain_events(queue_events: queue.Queue[AdapterEvent], runtime: RuntimeState
         if base_symbol is None or base_symbol not in runtime.pending:
             continue
         runtime.pending[base_symbol].append(item.event)
+        runtime.last_event_ms[base_symbol] = item.event.timestamp
 
 
-def _update_state(runtime: RuntimeState, now_ms: int) -> None:
+def _update_state(
+    runtime: RuntimeState,
+    now_ms: int,
+    tbt_cutoffs: dict[str, int],
+    tbt_windows: dict[str, int],
+) -> None:
     for symbol, loop in runtime.loops.items():
         events = runtime.pending[symbol]
         runtime.pending[symbol] = []
-        runtime.last_state[symbol] = loop.step(events, now_ms)
+        window_override = tbt_windows.get(symbol)
+        if events:
+            runtime.last_state[symbol] = loop.step(
+                events, now_ms, window_override_ms=window_override
+            )
+            continue
+        last_event_ms = runtime.last_event_ms.get(symbol)
+        if last_event_ms is None:
+            continue
+        cutoff_ms = tbt_cutoffs.get(symbol)
+        if cutoff_ms is None:
+            continue
+        if now_ms - last_event_ms <= cutoff_ms:
+            runtime.last_state[symbol] = loop.step(
+                events, now_ms, window_override_ms=window_override
+            )
 
 
 def _adapter_status(
     symbol: str,
     now_ms: int,
     adapter: BinanceSpotWSAdapter | BinancePerpWSAdapter | None,
-    mapping: dict[str, str],
+    mapping: dict[str, list[str]],
 ) -> AdapterStatus:
     if adapter is None:
         return AdapterStatus.DISCONNECTED
-    actual = mapping.get(symbol)
-    if actual is None:
+    actuals = mapping.get(symbol)
+    if not actuals:
         return AdapterStatus.DISCONNECTED
-    return adapter.status(actual, now_ms)
+    if adapter.status(actuals[0], now_ms) == AdapterStatus.DISCONNECTED:
+        return AdapterStatus.DISCONNECTED
+    statuses = [adapter.status(actual, now_ms) for actual in actuals]
+    if any(status == AdapterStatus.CONNECTED for status in statuses):
+        return AdapterStatus.CONNECTED
+    return AdapterStatus.STALE
 
 
 def _configure_logging() -> None:
@@ -246,54 +343,66 @@ def _configure_logging() -> None:
     )
 
 
-def _report_missing(runtime: RuntimeState, supervisor: AdapterSupervisor) -> None:
+def _report_missing(
+    runtime: RuntimeState, supervisor: AdapterSupervisor, *, prefix: str
+) -> None:
     if supervisor.spot is not None:
         missing = [
             runtime.symbol_maps.spot_actual_to_base.get(actual, actual)
             for actual in supervisor.spot.missing_symbols()
         ]
         if missing:
-            logging.warning("Spot missing symbols: %s", ",".join(missing))
+            logging.warning("%s spot symbols: %s", prefix, ",".join(missing))
     if supervisor.perp is not None:
         missing = [
             runtime.symbol_maps.perp_actual_to_base.get(actual, actual)
             for actual in supervisor.perp.missing_symbols()
         ]
         if missing:
-            logging.warning("Perp missing symbols: %s", ",".join(missing))
-
-
-def _refresh_resolution(
-    config: AppConfig,
-    runtime: RuntimeState,
-    supervisor: AdapterSupervisor,
-) -> None:
-    resolver = BinanceSymbolResolver()
-    spot_resolution = resolver.resolve_spot(config.adapters["binance_spot"].symbols)
-    perp_resolution = resolver.resolve_perp(config.adapters["binance_perp"].symbols)
-
-    _log_promotions("Spot", runtime.symbol_maps.spot_base_to_actual, spot_resolution.resolved)
-    _log_promotions("Perp", runtime.symbol_maps.perp_base_to_actual, perp_resolution.resolved)
-
-    symbol_maps = build_symbol_maps(spot_resolution, perp_resolution)
-    runtime.symbol_maps = symbol_maps
-    supervisor.update_symbols(
-        spot_symbols=list(symbol_maps.spot_base_to_actual.values()),
-        perp_symbols=list(symbol_maps.perp_base_to_actual.values()),
-    )
-
-
-def _log_promotions(label: str, current: dict[str, str], updated: dict[str, str]) -> None:
-    for base, new_symbol in updated.items():
-        old_symbol = current.get(base)
-        if old_symbol and old_symbol != new_symbol:
-            logging.info("%s promoted %s: %s -> %s", label, base, old_symbol, new_symbol)
+            logging.warning("%s perp symbols: %s", prefix, ",".join(missing))
 
 
 def _map_to_base(item: AdapterEvent, symbol_maps: SymbolMaps) -> str | None:
-    if item.event.source_id == "binance_spot":
+    if item.event.source_id.startswith("binance_spot"):
         return symbol_maps.spot_actual_to_base.get(item.symbol)
     return symbol_maps.perp_actual_to_base.get(item.symbol)
+
+
+def _build_tbt_settings(
+    runtime: RuntimeState,
+    supervisor: AdapterSupervisor,
+    fallback_ms: int,
+    window_multiplier: float,
+) -> tuple[dict[str, int], dict[str, int]]:
+    cutoffs: dict[str, int] = {}
+    windows: dict[str, int] = {}
+    for symbol in runtime.loops:
+        spot_actuals = runtime.symbol_maps.spot_base_to_actual.get(symbol, [])
+        perp_actuals = runtime.symbol_maps.perp_base_to_actual.get(symbol, [])
+        tbt_values: list[float] = []
+        if supervisor.spot is not None:
+            spot_tbt = supervisor.spot.tbt_min(spot_actuals)
+            if spot_tbt is not None:
+                tbt_values.append(spot_tbt)
+        if supervisor.perp is not None:
+            perp_tbt = supervisor.perp.tbt_min(perp_actuals)
+            if perp_tbt is not None:
+                tbt_values.append(perp_tbt)
+        if tbt_values:
+            min_tbt = min(tbt_values)
+            cutoffs[symbol] = max(1, int(min_tbt))
+            windows[symbol] = max(fallback_ms, int(min_tbt * window_multiplier))
+        else:
+            cutoffs[symbol] = fallback_ms
+            windows[symbol] = fallback_ms
+    return cutoffs, windows
+
+
+def _flatten(mapping: dict[str, list[str]]) -> list[str]:
+    flattened: list[str] = []
+    for symbols in mapping.values():
+        flattened.extend(symbols)
+    return flattened
 
 
 if __name__ == "__main__":

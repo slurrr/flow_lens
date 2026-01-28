@@ -32,7 +32,6 @@ class StateSnapshot:
 class StateEngine:
     def __init__(self, defaults: Defaults = Defaults()) -> None:
         self._defaults = defaults
-        self._last_price: float | None = None
         self._recent_effort: Deque[float] = deque(maxlen=defaults.effort_floor.rolling_window_ticks)
         self._x_smoothed: float | None = None
         self._y_smoothed: float | None = None
@@ -47,18 +46,20 @@ class StateEngine:
         frame: FlowFrame,
         *,
         dispersion_sources: Mapping[str, float] | None = None,
-        effort_floor_total: float | None = None,
     ) -> StateSnapshot:
         e_spot, e_perp, per_source = _aggregate_efforts(frame.efforts)
         total_effort = e_spot + e_perp
         dominance = e_spot - e_perp
 
-        x_raw = _clamp(self._dominance_ratio(dominance, total_effort), -1.0, 1.0)
-        disp = self._directional_displacement(dominance, frame.price)
-        y_raw = self._effectiveness_raw(disp, total_effort)
-        floor_total = total_effort if effort_floor_total is None else effort_floor_total
-        self._recent_effort.append(floor_total)
-        y_gated = self._apply_effort_floor_gate(y_raw, floor_total)
+        self._recent_effort.append(total_effort)
+        effort_norm = self._normalized_effort(total_effort)
+        gate = self._effort_gate(total_effort)
+        x_raw = _clamp(self._dominance_ratio(dominance, total_effort), -1.0, 1.0) * gate
+        disp = self._directional_displacement(
+            dominance, frame.price_start, frame.price
+        )
+        y_raw = self._effectiveness_raw(disp, effort_norm)
+        y_gated = gate * y_raw
 
         prev_x = self._x_smoothed
         prev_y = self._y_smoothed
@@ -89,8 +90,6 @@ class StateEngine:
 
         lean = self._derive_lean(prev_x, prev_y, x, y)
 
-        self._last_price = frame.price
-
         return StateSnapshot(
             x_raw=x_raw,
             y_raw=y_raw,
@@ -110,31 +109,44 @@ class StateEngine:
     def _dominance_ratio(self, dominance: float, total_effort: float) -> float:
         return dominance / (total_effort + EPSILON)
 
-    def _directional_displacement(self, dominance: float, price: float) -> float:
-        if self._last_price is None:
+    def _directional_displacement(
+        self, dominance: float, price_start: float, price_end: float
+    ) -> float:
+        if price_start <= 0.0 or price_end <= 0.0:
             return 0.0
-        delta = price - self._last_price
+        delta = _log_return(price_start, price_end)
         if dominance > 0:
             return delta
         if dominance < 0:
             return -delta
         return 0.0
 
-    def _effectiveness_raw(self, displacement: float, total_effort: float) -> float:
-        eff_raw = displacement / (total_effort + EPSILON)
+    def _effectiveness_raw(self, displacement: float, effort_norm: float) -> float:
+        eff_raw = displacement / (effort_norm + EPSILON)
         k = self._defaults.effectiveness_scaling.tanh_k
         return _tanh(k * eff_raw)
 
     def _apply_effort_floor_gate(self, y_raw: float, total_effort: float) -> float:
-        if not self._recent_effort:
-            return y_raw
-        effort_floor = self._effort_floor()
-        gate = _clamp(total_effort / (effort_floor + EPSILON), 0.0, 1.0)
+        gate = self._effort_gate(total_effort)
         return gate * y_raw
 
     def _effort_floor(self) -> float:
         floor = median(self._recent_effort)
         return floor * self._defaults.effort_floor.multiplier_alpha
+
+    def _normalized_effort(self, total_effort: float) -> float:
+        if not self._recent_effort:
+            return total_effort
+        baseline = median(self._recent_effort)
+        if baseline <= 0.0:
+            return total_effort
+        return total_effort / baseline
+
+    def _effort_gate(self, total_effort: float) -> float:
+        if not self._recent_effort:
+            return 1.0
+        effort_floor = self._effort_floor()
+        return _clamp(total_effort / (effort_floor + EPSILON), 0.0, 1.0)
 
     def _force_magnitude(self, dominance: float, total_effort: float) -> float:
         dom = abs(dominance) / (total_effort + EPSILON)
@@ -193,6 +205,12 @@ def _exp(value: float) -> float:
     from math import exp
 
     return float(exp(value))
+
+
+def _log_return(price_start: float, price_end: float) -> float:
+    from math import log
+
+    return float(log(price_end / price_start))
 
 
 def _aggregate_efforts(

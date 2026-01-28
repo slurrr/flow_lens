@@ -15,6 +15,7 @@ class AdapterConfig:
 @dataclass(frozen=True)
 class AppConfig:
     adapters: Mapping[str, AdapterConfig]
+    tbt_window_multiplier: float
 
 
 def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
@@ -23,6 +24,12 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     adapters_section = data.get("adapters", {})
     if not isinstance(adapters_section, dict) or not adapters_section:
         raise ValueError("app.toml must define adapters.")
+    runtime_section = data.get("runtime", {})
+    if not isinstance(runtime_section, dict):
+        raise ValueError("runtime config must be a table.")
+    tbt_window_multiplier = runtime_section.get("tbt_window_multiplier", 4.0)
+    if not isinstance(tbt_window_multiplier, (int, float)):
+        raise ValueError("runtime.tbt_window_multiplier must be a number.")
 
     adapters: dict[str, AdapterConfig] = {}
     for name, adapter in adapters_section.items():
@@ -41,7 +48,7 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
             symbols=normalized_symbols,
         )
 
-    return AppConfig(adapters=adapters)
+    return AppConfig(adapters=adapters, tbt_window_multiplier=float(tbt_window_multiplier))
 
 
 def normalize_symbol(symbol: str) -> str:
