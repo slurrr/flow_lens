@@ -16,6 +16,8 @@ class AdapterConfig:
 class AppConfig:
     adapters: Mapping[str, AdapterConfig]
     tbt_window_multiplier: float
+    tanh_k: float
+    scale_window_seconds: float
 
 
 def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
@@ -28,8 +30,14 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     if not isinstance(runtime_section, dict):
         raise ValueError("runtime config must be a table.")
     tbt_window_multiplier = runtime_section.get("tbt_window_multiplier", 4.0)
+    tanh_k = runtime_section.get("tanh_k", 500.0)
+    scale_window_seconds = runtime_section.get("scale_window_seconds", 600.0)
     if not isinstance(tbt_window_multiplier, (int, float)):
         raise ValueError("runtime.tbt_window_multiplier must be a number.")
+    if not isinstance(tanh_k, (int, float)):
+        raise ValueError("runtime.tanh_k must be a number.")
+    if not isinstance(scale_window_seconds, (int, float)):
+        raise ValueError("runtime.scale_window_seconds must be a number.")
 
     adapters: dict[str, AdapterConfig] = {}
     for name, adapter in adapters_section.items():
@@ -48,7 +56,12 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
             symbols=normalized_symbols,
         )
 
-    return AppConfig(adapters=adapters, tbt_window_multiplier=float(tbt_window_multiplier))
+    return AppConfig(
+        adapters=adapters,
+        tbt_window_multiplier=float(tbt_window_multiplier),
+        tanh_k=float(tanh_k),
+        scale_window_seconds=float(scale_window_seconds),
+    )
 
 
 def normalize_symbol(symbol: str) -> str:

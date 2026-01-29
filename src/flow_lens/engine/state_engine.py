@@ -14,6 +14,9 @@ EPSILON = 1e-9
 
 @dataclass(frozen=True)
 class StateSnapshot:
+    e_spot: float
+    e_perp: float
+    e_spot_share: float
     x_raw: float
     y_raw: float
     y_gated: float
@@ -27,12 +30,38 @@ class StateSnapshot:
     lean: tuple[int, int] | None
     dominance: float
     total_effort: float
+    effort_floor: float
+    effort_median: float
+    effort_norm: float
+    gate: float
+    eff_raw: float
+    disp: float
+    log_return: float
+    price_start: float
+    price_end: float
+    window_seconds: float
+    disp_rate: float
+    effort_rate: float
+    disp_scale: float
+    effort_scale: float
+    spot_fresh: bool
+    perp_fresh: bool
+    price_series_used: str
+    spot_event_count_window: int
+    perp_event_count_window: int
+    last_spot_event_ts: int | None
+    last_perp_event_ts: int | None
+    source_count_active: int
+    max_source_share: float
+    top_source_id: str | None
+    top_source_effort: float
 
 
 class StateEngine:
-    def __init__(self, defaults: Defaults = Defaults()) -> None:
-        self._defaults = defaults
-        self._recent_effort: Deque[float] = deque(maxlen=defaults.effort_floor.rolling_window_ticks)
+    def __init__(self, defaults: Defaults | None = None) -> None:
+        self._defaults = defaults if defaults is not None else Defaults()
+        self._recent_effort: Deque[tuple[int, float]] = deque()
+        self._recent_disp_rate: Deque[tuple[int, float]] = deque()
         self._x_smoothed: float | None = None
         self._y_smoothed: float | None = None
         self._halo: float | None = None
@@ -51,14 +80,23 @@ class StateEngine:
         total_effort = e_spot + e_perp
         dominance = e_spot - e_perp
 
-        self._recent_effort.append(total_effort)
-        effort_norm = self._normalized_effort(total_effort)
-        gate = self._effort_gate(total_effort)
-        x_raw = _clamp(self._dominance_ratio(dominance, total_effort), -1.0, 1.0) * gate
-        disp = self._directional_displacement(
-            dominance, frame.price_start, frame.price
-        )
-        y_raw = self._effectiveness_raw(disp, effort_norm)
+        window_seconds = max(frame.window_seconds, EPSILON)
+        log_return = _log_return(frame.price_start, frame.price) if frame.price_start > 0 else 0.0
+        disp_rate = log_return / (window_seconds + EPSILON)
+        disp_rate_dir = _sign(dominance) * disp_rate
+        effort_rate = total_effort / (window_seconds + EPSILON)
+        self._update_scales(frame.timestamp, abs(disp_rate), effort_rate)
+
+        effort_median = self._median_recent(self._recent_effort)
+        effort_floor = effort_median * self._defaults.effort_floor.multiplier_alpha
+        effort_scale = self._median_recent(self._recent_effort)
+        disp_scale = self._median_recent(self._recent_disp_rate)
+        effort_norm = effort_rate / (effort_scale + EPSILON)
+        gate = self._effort_gate(effort_rate)
+        x_raw = _clamp(self._dominance_ratio(dominance, total_effort), -1.0, 1.0)
+        disp = disp_rate_dir
+        eff_raw = self._effectiveness_ratio(disp_rate_dir, disp_scale, effort_rate, effort_scale)
+        y_raw = self._apply_tanh(eff_raw)
         y_gated = gate * y_raw
 
         prev_x = self._x_smoothed
@@ -90,7 +128,13 @@ class StateEngine:
 
         lean = self._derive_lean(prev_x, prev_y, x, y)
 
+        source_count_active, max_source_share, top_source_id, top_source_effort = _source_stats(
+            halo_sources
+        )
         return StateSnapshot(
+            e_spot=e_spot,
+            e_perp=e_perp,
+            e_spot_share=e_spot / (total_effort + EPSILON),
             x_raw=x_raw,
             y_raw=y_raw,
             y_gated=y_gated,
@@ -104,25 +148,48 @@ class StateEngine:
             lean=lean,
             dominance=dominance,
             total_effort=total_effort,
+            effort_floor=effort_floor,
+            effort_median=effort_median,
+            effort_norm=effort_norm,
+            gate=gate,
+            eff_raw=eff_raw,
+            disp=disp,
+            log_return=log_return,
+            price_start=frame.price_start,
+            price_end=frame.price,
+            window_seconds=window_seconds,
+            disp_rate=disp_rate,
+            effort_rate=effort_rate,
+            disp_scale=disp_scale,
+            effort_scale=effort_scale,
+            spot_fresh=frame.spot_fresh,
+            perp_fresh=frame.perp_fresh,
+            price_series_used=frame.price_series_used,
+            spot_event_count_window=frame.spot_event_count_window,
+            perp_event_count_window=frame.perp_event_count_window,
+            last_spot_event_ts=frame.last_spot_event_ts,
+            last_perp_event_ts=frame.last_perp_event_ts,
+            source_count_active=source_count_active,
+            max_source_share=max_source_share,
+            top_source_id=top_source_id,
+            top_source_effort=top_source_effort,
         )
 
     def _dominance_ratio(self, dominance: float, total_effort: float) -> float:
         return dominance / (total_effort + EPSILON)
 
-    def _directional_displacement(
-        self, dominance: float, price_start: float, price_end: float
+    def _effectiveness_ratio(
+        self,
+        disp_rate_dir: float,
+        disp_scale: float,
+        effort_rate: float,
+        effort_scale: float,
     ) -> float:
-        if price_start <= 0.0 or price_end <= 0.0:
-            return 0.0
-        delta = _log_return(price_start, price_end)
-        if dominance > 0:
-            return delta
-        if dominance < 0:
-            return -delta
-        return 0.0
+        numerator = disp_rate_dir * (effort_scale + EPSILON)
+        denominator = (effort_rate * (disp_scale + EPSILON)) + EPSILON
+        return numerator / denominator
 
-    def _effectiveness_raw(self, displacement: float, effort_norm: float) -> float:
-        eff_raw = displacement / (effort_norm + EPSILON)
+    def _apply_tanh(self, eff_raw: float) -> float:
         k = self._defaults.effectiveness_scaling.tanh_k
         return _tanh(k * eff_raw)
 
@@ -130,23 +197,30 @@ class StateEngine:
         gate = self._effort_gate(total_effort)
         return gate * y_raw
 
-    def _effort_floor(self) -> float:
-        floor = median(self._recent_effort)
-        return floor * self._defaults.effort_floor.multiplier_alpha
-
-    def _normalized_effort(self, total_effort: float) -> float:
-        if not self._recent_effort:
-            return total_effort
-        baseline = median(self._recent_effort)
-        if baseline <= 0.0:
-            return total_effort
-        return total_effort / baseline
-
-    def _effort_gate(self, total_effort: float) -> float:
+    def _effort_gate(self, effort_rate: float) -> float:
         if not self._recent_effort:
             return 1.0
-        effort_floor = self._effort_floor()
-        return _clamp(total_effort / (effort_floor + EPSILON), 0.0, 1.0)
+        effort_floor = self._median_recent(self._recent_effort)
+        floor = effort_floor * self._defaults.effort_floor.multiplier_alpha
+        return _clamp(effort_rate / (floor + EPSILON), 0.0, 1.0)
+
+    def _update_scales(self, now_ms: int, disp_rate_abs: float, effort_rate: float) -> None:
+        window_ms = int(self._defaults.input_normalization.scale_window_seconds * 1000)
+        cutoff = now_ms - window_ms
+        self._recent_disp_rate.append((now_ms, disp_rate_abs))
+        self._recent_effort.append((now_ms, effort_rate))
+        while self._recent_disp_rate and self._recent_disp_rate[0][0] < cutoff:
+            self._recent_disp_rate.popleft()
+        while self._recent_effort and self._recent_effort[0][0] < cutoff:
+            self._recent_effort.popleft()
+
+    def _median_recent(self, values: Deque[tuple[int, float]]) -> float:
+        if not values:
+            return 0.0
+        samples = [value for _, value in values if value > 0.0]
+        if not samples:
+            return 0.0
+        return median(samples)
 
     def _force_magnitude(self, dominance: float, total_effort: float) -> float:
         dom = abs(dominance) / (total_effort + EPSILON)
@@ -181,7 +255,7 @@ class StateEngine:
             return None
 
         self._lean_dir = (_sign(dx), _sign(dy))
-        self._lean_frames_remaining = 1
+        self._lean_frames_remaining = 2
         return self._lean_dir
 
 
@@ -234,6 +308,25 @@ def _smooth(previous: float | None, current: float, alpha: float) -> float:
     if previous is None:
         return current
     return previous + alpha * (current - previous)
+
+
+def _source_stats(
+    sources: Mapping[str, float],
+) -> tuple[int, float, str | None, float]:
+    total = sum(sources.values())
+    if total <= 0.0:
+        return 0, 0.0, None, 0.0
+    top_source_id = None
+    top_effort = 0.0
+    active = 0
+    for source_id, effort in sources.items():
+        if effort > 0:
+            active += 1
+        if effort > top_effort:
+            top_effort = effort
+            top_source_id = source_id
+    max_share = top_effort / (total + EPSILON)
+    return active, max_share, top_source_id, top_effort
 
 
 def _bin_with_hysteresis(

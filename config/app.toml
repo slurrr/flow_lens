@@ -57,3 +57,5 @@ symbols = [
 
 [runtime]
 tbt_window_multiplier = 4.0
+tanh_k = 0.10
+scale_window_seconds = 600.0

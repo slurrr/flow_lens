@@ -9,4 +9,4 @@ Effectiveness (Y) is computed from window-anchored log-return displacement and e
 This keeps Y dimensionless and comparable across symbols while preserving the core meaning: “over this window, given who is dominant, is price moving in that direction per unit of effort.” Log-return avoids unit mismatch, and effort normalization prevents notional scale from collapsing Y toward zero.
 
 ## Status
-Accepted
+Superseded by FL-0048.

@@ -4,8 +4,9 @@
 
 Effectiveness is scaled by an effort floor gate:
 
-E_floor = α · median(E over last N ticks)  
-gate = clamp(E / (E_floor + ε), 0, 1)
+E_rate = E_total / (Δ_seconds + ε)  
+E_floor = α · median(E_rate over last N ticks/frames)  
+gate = clamp(E_rate / (E_floor + ε), 0, 1)
 
 Y = gate · Y_raw
 

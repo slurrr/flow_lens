@@ -9,4 +9,4 @@ The air-pocket effort floor gate applies to dominance (X) as well as effectivene
 This prevents data-availability artifacts (e.g., one side missing for a tick) from forcing extreme control readings when actual effort is thin.
 
 ## Status
-Accepted
+Superseded by FL-0048.

@@ -30,11 +30,16 @@ class EngineLoop:
             self.buffer.extend(step_events)
         self.buffer.expire(now_timestamp)
 
-        price_start, price_end = self.buffer.window_price_range(now_timestamp)
+        price_start, price_end, price_series = self.buffer.window_price_range(now_timestamp)
         if price_end is None:
             return None
         if price_start is None:
             price_start = price_end
+
+        spot_count, perp_count = self.buffer.window_counts(now_timestamp)
+        last_spot_ts, last_perp_ts = self.buffer.last_event_timestamps()
+        spot_fresh = spot_count > 0
+        perp_fresh = perp_count > 0
 
         buffer_snapshot = self.buffer.snapshot()
         buffer_agg = aggregate_events(buffer_snapshot)
@@ -43,6 +48,14 @@ class EngineLoop:
             timestamp=now_timestamp,
             price=price_end,
             price_start=price_start,
+            window_seconds=self.buffer.window_delta_ms / 1000.0,
+            price_series_used=price_series,
+            spot_fresh=spot_fresh,
+            perp_fresh=perp_fresh,
+            spot_event_count_window=spot_count,
+            perp_event_count_window=perp_count,
+            last_spot_event_ts=last_spot_ts,
+            last_perp_event_ts=last_perp_ts,
             efforts=tuple(
                 EffortContribution(
                     source_id=source_id, side_type=side_type, effort_value=effort_value

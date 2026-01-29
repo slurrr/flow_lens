@@ -19,4 +19,12 @@ class FlowFrame:
     timestamp: int
     price: float
     price_start: float
+    window_seconds: float
+    price_series_used: str
+    spot_fresh: bool
+    perp_fresh: bool
+    spot_event_count_window: int
+    perp_event_count_window: int
+    last_spot_event_ts: int | None
+    last_perp_event_ts: int | None
     efforts: Sequence[EffortContribution]

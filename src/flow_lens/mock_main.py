@@ -34,8 +34,8 @@ def _run(stdscr: "curses.window") -> None:
     defaults = Defaults()
     update_hz = 2.0
     fps = 30.0
-    step_ms = int(1000 / update_hz)
     window_ms = int(defaults.time_domain.update_window_seconds * 1000)
+    sim_step_ms = window_ms
 
     scenarios = _build_storyboard_scenarios()
     input_state = InputState(symbols=list(scenarios.keys()))
@@ -45,7 +45,7 @@ def _run(stdscr: "curses.window") -> None:
         input_state.symbol,
         scenarios[input_state.symbol],
         window_ms,
-        step_ms,
+        sim_step_ms,
     )
     last_state: StateSnapshot | None = None
     last_update = time.monotonic()
@@ -63,7 +63,7 @@ def _run(stdscr: "curses.window") -> None:
                     input_state.symbol,
                     scenarios[input_state.symbol],
                     window_ms,
-                    step_ms,
+                    sim_step_ms,
                 )
                 last_state = None
 
@@ -75,12 +75,12 @@ def _run(stdscr: "curses.window") -> None:
                     input_state.symbol,
                     scenarios[input_state.symbol],
                     window_ms,
-                    step_ms,
+                    sim_step_ms,
                 )
                 last_state = None
             events = adapter.next_events()
             last_state = loop.step(events, now_timestamp)
-            now_timestamp += step_ms
+            now_timestamp += sim_step_ms
 
         if now - last_frame >= 1.0 / fps:
             last_frame = now
@@ -103,7 +103,7 @@ def _init_scenario(
     name: str,
     steps: Iterable[StepSpec],
     window_ms: int,
-    step_ms: int,
+    sim_step_ms: int,
 ) -> tuple[EngineLoop, MockAdapter, int]:
     now_ms = int(time.time() * 1000)
     mock_steps = _steps_from_specs(steps)
@@ -111,7 +111,7 @@ def _init_scenario(
         symbol=name,
         steps=mock_steps,
         start_timestamp_ms=now_ms,
-        step_ms=step_ms,
+        step_ms=sim_step_ms,
     )
     buffer = RollingEventBuffer(window_delta_ms=window_ms)
     engine = StateEngine()

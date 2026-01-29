@@ -25,7 +25,12 @@ class Smoothing:
 
 @dataclass(frozen=True)
 class EffectivenessScaling:
-    tanh_k: float = 1.0
+    tanh_k: float = 500.0
+
+
+@dataclass(frozen=True)
+class InputNormalization:
+    scale_window_seconds: float = 600.0
 
 
 @dataclass(frozen=True)
@@ -48,5 +53,6 @@ class Defaults:
     dispersion_metric: DispersionMetric = "hill"
     smoothing: Smoothing = Smoothing()
     effectiveness_scaling: EffectivenessScaling = EffectivenessScaling()
+    input_normalization: InputNormalization = InputNormalization()
     halo_dynamics: HaloDynamics = HaloDynamics()
     binning: Binning = Binning()

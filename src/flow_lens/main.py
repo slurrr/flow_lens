@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import curses
+import json
 import logging
 import queue
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from typing import TextIO
 
 from flow_lens.adapters import (
     AdapterEvent,
@@ -17,7 +21,11 @@ from flow_lens.adapters import (
 )
 from flow_lens.config import AppConfig, load_app_config
 from flow_lens.engine.buffer import RollingEventBuffer
-from flow_lens.engine.constants import Defaults
+from flow_lens.engine.constants import (
+    Defaults,
+    EffectivenessScaling,
+    InputNormalization,
+)
 from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
 from flow_lens.models.event import Event
@@ -43,10 +51,17 @@ class RuntimeState:
 
 def main() -> None:
     _configure_logging()
-    curses.wrapper(_run)
+    parser = argparse.ArgumentParser(description="Flow Lens TUI")
+    parser.add_argument(
+        "--dia",
+        action="store_true",
+        help="Enable diagnostics logging to JSONL.",
+    )
+    args = parser.parse_args()
+    curses.wrapper(partial(_run, diagnostics_enabled=args.dia))
 
 
-def _run(stdscr: "curses.window") -> None:
+def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     stdscr.nodelay(True)
     stdscr.keypad(True)
     curses.curs_set(0)
@@ -56,6 +71,24 @@ def _run(stdscr: "curses.window") -> None:
     window_ms = int(defaults.time_domain.update_window_seconds * 1000)
 
     config = load_app_config()
+    defaults = Defaults(
+        time_domain=defaults.time_domain,
+        effort_floor=defaults.effort_floor,
+        dispersion_metric=defaults.dispersion_metric,
+        smoothing=defaults.smoothing,
+        effectiveness_scaling=EffectivenessScaling(tanh_k=config.tanh_k),
+        input_normalization=InputNormalization(
+            scale_window_seconds=config.scale_window_seconds,
+        ),
+        halo_dynamics=defaults.halo_dynamics,
+        binning=defaults.binning,
+    )
+    logging.info(
+        "Runtime config: tanh_k=%.3f tbt_window_multiplier=%.3f scale_window_seconds=%.3f",
+        config.tanh_k,
+        config.tbt_window_multiplier,
+        config.scale_window_seconds,
+    )
     base_symbols = _collect_symbols(config)
 
     resolver = BinanceSymbolResolver()
@@ -75,9 +108,16 @@ def _run(stdscr: "curses.window") -> None:
         perp_symbols=_flatten(symbol_maps.perp_base_to_actual),
     )
 
-    runtime = _init_runtime(base_symbols, window_ms, symbol_maps)
+    runtime = _init_runtime(base_symbols, window_ms, symbol_maps, defaults)
     input_state = InputState(symbols=base_symbols)
     renderer = Renderer(RendererConfig())
+    diagnostics: DiagnosticLogger | None = None
+    if diagnostics_enabled:
+        diagnostics = DiagnosticLogger(
+            path=Path("logs/flow_lens_diagnostics.jsonl"),
+            symbols={"ASTER", "XPL", "SHIB", "BTC", "ETH", "SOL"},
+            tanh_k=config.tanh_k,
+        )
 
     last_update = time.monotonic()
     last_frame = last_update
@@ -103,7 +143,7 @@ def _run(stdscr: "curses.window") -> None:
                 window_ms,
                 config.tbt_window_multiplier,
             )
-            _update_state(runtime, now_ms, tbt_cutoffs, tbt_windows)
+            _update_state(runtime, now_ms, tbt_cutoffs, tbt_windows, diagnostics)
 
         if not reported_missing and now - start_time > 30:
             _report_missing(runtime, supervisor, prefix="No events yet")
@@ -252,7 +292,12 @@ class AdapterSupervisor:
             raise
 
 
-def _init_runtime(symbols: list[str], window_ms: int, symbol_maps: SymbolMaps) -> RuntimeState:
+def _init_runtime(
+    symbols: list[str],
+    window_ms: int,
+    symbol_maps: SymbolMaps,
+    defaults: Defaults,
+) -> RuntimeState:
     loops: dict[str, EngineLoop] = {}
     last_state: dict[str, StateSnapshot | None] = {}
     pending: dict[str, list[Event]] = {symbol: [] for symbol in symbols}
@@ -260,7 +305,7 @@ def _init_runtime(symbols: list[str], window_ms: int, symbol_maps: SymbolMaps) -
 
     for symbol in symbols:
         buffer = RollingEventBuffer(window_delta_ms=window_ms)
-        engine = StateEngine()
+        engine = StateEngine(defaults)
         loops[symbol] = EngineLoop(symbol=symbol, buffer=buffer, engine=engine)
         last_state[symbol] = None
 
@@ -291,6 +336,7 @@ def _update_state(
     now_ms: int,
     tbt_cutoffs: dict[str, int],
     tbt_windows: dict[str, int],
+    diagnostics: "DiagnosticLogger | None",
 ) -> None:
     for symbol, loop in runtime.loops.items():
         events = runtime.pending[symbol]
@@ -300,6 +346,8 @@ def _update_state(
             runtime.last_state[symbol] = loop.step(
                 events, now_ms, window_override_ms=window_override
             )
+            if diagnostics is not None:
+                diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
             continue
         last_event_ms = runtime.last_event_ms.get(symbol)
         if last_event_ms is None:
@@ -311,6 +359,8 @@ def _update_state(
             runtime.last_state[symbol] = loop.step(
                 events, now_ms, window_override_ms=window_override
             )
+            if diagnostics is not None:
+                diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
 
 
 def _adapter_status(
@@ -341,6 +391,101 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[logging.FileHandler(log_path, encoding="utf-8")],
     )
+
+
+class DiagnosticLogger:
+    def __init__(
+        self,
+        *,
+        path: Path,
+        symbols: set[str],
+        tanh_k: float,
+        max_lines: int = 20_000,
+    ) -> None:
+        self._base_path = path
+        self._symbols = {symbol.upper() for symbol in symbols}
+        self._tanh_k = tanh_k
+        self._max_lines = max_lines
+        self._line_count = 0
+        self._part = 0
+        self._run_id = time.strftime("%Y%m%d-%H%M%S")
+        self._base_path.parent.mkdir(exist_ok=True)
+        self._file = self._open_new_file()
+
+    def _open_new_file(self) -> TextIO:
+        suffix = f"-{self._run_id}-p{self._part:02d}.jsonl"
+        filename = self._base_path.with_name(self._base_path.stem + suffix)
+        self._part += 1
+        self._line_count = 0
+        return filename.open("w", encoding="utf-8")
+
+    def log(
+        self,
+        symbol: str,
+        state: StateSnapshot | None,
+        now_ms: int,
+        buffer: RollingEventBuffer,
+    ) -> None:
+        if state is None:
+            return
+        symbol_upper = symbol.upper()
+        if symbol_upper not in self._symbols:
+            return
+        record = {
+            "ts_wall_ms": int(time.time() * 1000),
+            "now_ms": now_ms,
+            "symbol": symbol_upper,
+            "window_ms": buffer.window_delta_ms,
+            "window_seconds": state.window_seconds,
+            "buffer_event_count": buffer.size,
+            "tanh_k": self._tanh_k,
+            "price_series_used": state.price_series_used,
+            "spot_fresh": state.spot_fresh,
+            "perp_fresh": state.perp_fresh,
+            "last_spot_event_ts": state.last_spot_event_ts,
+            "last_perp_event_ts": state.last_perp_event_ts,
+            "spot_event_count_window": state.spot_event_count_window,
+            "perp_event_count_window": state.perp_event_count_window,
+            "price_start": state.price_start,
+            "price_end": state.price_end,
+            "log_return": state.log_return,
+            "delta_price": state.price_end - state.price_start,
+            "disp_rate": state.disp_rate,
+            "E_rate": state.effort_rate,
+            "disp_scale": state.disp_scale,
+            "E_scale": state.effort_scale,
+            "E_spot": state.e_spot,
+            "E_perp": state.e_perp,
+            "E_total": state.total_effort,
+            "D": state.dominance,
+            "E_spot_share": state.e_spot_share,
+            "X_raw": state.x_raw,
+            "X": state.x,
+            "size_raw": state.size_raw,
+            "size_bin": state.size_bin,
+            "disp": state.disp,
+            "effort_floor": state.effort_floor,
+            "effort_median": state.effort_median,
+            "effort_norm": state.effort_norm,
+            "gate": state.gate,
+            "eff_raw": state.eff_raw,
+            "Y_raw": state.y_raw,
+            "Y_gated": state.y_gated,
+            "Y": state.y,
+            "halo_raw": state.halo_raw,
+            "halo": state.halo,
+            "halo_bin": state.halo_bin,
+            "source_count_active": state.source_count_active,
+            "max_source_share": state.max_source_share,
+            "top_source_id": state.top_source_id,
+            "top_source_effort": state.top_source_effort,
+        }
+        self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+        self._file.flush()
+        self._line_count += 1
+        if self._line_count >= self._max_lines:
+            self._file.close()
+            self._file = self._open_new_file()
 
 
 def _report_missing(

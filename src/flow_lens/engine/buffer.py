@@ -81,7 +81,7 @@ class RollingEventBuffer:
             return self._last_spot_price
         return self._last_perp_price
 
-    def window_price_range(self, now_timestamp: int) -> tuple[float | None, float | None]:
+    def window_price_range(self, now_timestamp: int) -> tuple[float | None, float | None, str]:
         spot_fresh = self._spot_fresh(now_timestamp)
         perp_fresh = self._perp_fresh(now_timestamp)
         if spot_fresh:
@@ -93,19 +93,37 @@ class RollingEventBuffer:
         elif self._last_perp_price is not None:
             side = "perp"
         else:
-            return None, None
+            return None, None, "none"
 
         if side == "spot":
             start = self._window_start_price("spot")
             end = self._last_spot_price
+            series = "spot" if spot_fresh else "spot_fallback"
         else:
             start = self._window_start_price("perp")
             end = self._last_perp_price
+            series = "perp" if perp_fresh else "perp_fallback"
         if end is None:
-            return None, None
+            return None, None, series
         if start is None:
             start = end
-        return start, end
+        return start, end, series
+
+    def window_counts(self, now_timestamp: int) -> tuple[int, int]:
+        cutoff = now_timestamp - self.window_delta_ms
+        spot_count = 0
+        perp_count = 0
+        for event in self._events:
+            if event.timestamp < cutoff:
+                continue
+            if event.side_type == "spot":
+                spot_count += 1
+            elif event.side_type == "perp":
+                perp_count += 1
+        return spot_count, perp_count
+
+    def last_event_timestamps(self) -> tuple[int | None, int | None]:
+        return self._last_spot_timestamp, self._last_perp_timestamp
 
     def _spot_fresh(self, now_timestamp: int) -> bool:
         if self._last_spot_timestamp is None:

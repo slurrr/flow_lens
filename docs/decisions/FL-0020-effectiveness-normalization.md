@@ -17,4 +17,4 @@ Using displacement per effort distinguishes true acceptance from force without m
 
 ## Status
 
-Accepted (Invariant)
+Superseded by FL-0048.
