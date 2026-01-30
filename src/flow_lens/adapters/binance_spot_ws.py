@@ -58,6 +58,7 @@ class BinanceSpotWSAdapter(BaseAdapter):
                     price = float(data["p"])
                     quantity = float(data["q"])
                     timestamp = int(data["T"])
+                    aggressor_side = "sell" if data.get("m") else "buy"
                     quote_asset = self._quote_pair_by_symbol.get(symbol_upper)
                     if quote_asset is not None:
                         pair = self._quote_pairs[quote_asset]
@@ -80,6 +81,7 @@ class BinanceSpotWSAdapter(BaseAdapter):
                         timestamp=timestamp,
                         source_id="binance_spot",
                         side_type="spot",
+                        aggressor_side=aggressor_side,
                         effort_value=effort_value,
                         price=price_usdt,
                     )

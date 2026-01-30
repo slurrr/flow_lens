@@ -14,6 +14,7 @@ Each effort contribution is:
 {
   source_id: string,
   side_type: enum {spot, perp},
+  aggressor_side: enum {buy, sell},
   effort_value: float ≥ 0
 }
 
@@ -29,4 +30,4 @@ This keeps adapters simple and allows the engine to:
 
 ## Status
 
-Accepted (Invariant)
+Accepted (Amended by FL-0049)

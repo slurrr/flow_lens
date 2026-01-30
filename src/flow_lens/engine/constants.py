@@ -34,6 +34,23 @@ class InputNormalization:
 
 
 @dataclass(frozen=True)
+class EffectivenessDeadband:
+    disp_scale_multiplier: float = 0.25
+
+
+@dataclass(frozen=True)
+class DispScaleConfig:
+    percentile: float = 0.75
+    min_samples: int = 20
+
+
+@dataclass(frozen=True)
+class EffortScaleConfig:
+    percentile: float = 0.5
+    min_samples: int = 20
+
+
+@dataclass(frozen=True)
 class HaloDynamics:
     growth_rate: float = 0.10
     decay_rate: float = 0.5
@@ -54,5 +71,8 @@ class Defaults:
     smoothing: Smoothing = Smoothing()
     effectiveness_scaling: EffectivenessScaling = EffectivenessScaling()
     input_normalization: InputNormalization = InputNormalization()
+    effectiveness_deadband: EffectivenessDeadband = EffectivenessDeadband()
+    disp_scale: DispScaleConfig = DispScaleConfig()
+    effort_scale: EffortScaleConfig = EffortScaleConfig()
     halo_dynamics: HaloDynamics = HaloDynamics()
     binning: Binning = Binning()

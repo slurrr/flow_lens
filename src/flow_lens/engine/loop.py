@@ -56,11 +56,15 @@ class EngineLoop:
             perp_event_count_window=perp_count,
             last_spot_event_ts=last_spot_ts,
             last_perp_event_ts=last_perp_ts,
+            e_dir=buffer_agg.e_dir,
             efforts=tuple(
                 EffortContribution(
-                    source_id=source_id, side_type=side_type, effort_value=effort_value
+                    source_id=source_id,
+                    side_type=side_type,
+                    aggressor_side=aggressor_side,
+                    effort_value=effort_value,
                 )
-                for (source_id, side_type), effort_value in buffer_agg.per_key.items()
+                for (source_id, side_type, aggressor_side), effort_value in buffer_agg.per_key.items()
             ),
         )
         return self.engine.compute(

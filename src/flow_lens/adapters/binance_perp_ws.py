@@ -39,11 +39,13 @@ class BinancePerpWSAdapter(BaseAdapter):
                     price = float(data["p"])
                     quantity = float(data["q"])
                     timestamp = int(data["T"])
+                    aggressor_side = "sell" if data.get("m") else "buy"
                     effort_value = price * quantity
                     event = Event(
                         timestamp=timestamp,
                         source_id="binance_perp",
                         side_type="perp",
+                        aggressor_side=aggressor_side,
                         effort_value=effort_value,
                         price=price,
                     )

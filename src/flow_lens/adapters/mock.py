@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Sequence
 
-from flow_lens.models.event import Event, SideType
+from flow_lens.models.event import AggressorSide, Event, SideType
 
 
 @dataclass(frozen=True)
 class MockEffort:
     source_id: str
     side_type: SideType
+    aggressor_side: AggressorSide
     effort_value: float
 
 
@@ -53,6 +54,7 @@ class MockAdapter:
                 timestamp=timestamp,
                 source_id=effort.source_id,
                 side_type=effort.side_type,
+                aggressor_side=effort.aggressor_side,
                 effort_value=effort.effort_value,
                 price=step.price,
             )

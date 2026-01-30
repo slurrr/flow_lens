@@ -13,6 +13,8 @@ from typing import Iterable, cast
 DISP_RATE_MULTIPLIERS = (0.5, 1.0)
 X_MIN_THRESHOLD = 0.2
 EPSILON = 1e-12
+EFF_REL_ACTIVE_MULTIPLIER = 1.0
+K_RECO_TARGETS = (0.6, 0.7, 0.8)
 
 
 @dataclass
@@ -67,6 +69,12 @@ def _format_summary(label: str, stats: dict[str, float]) -> str:
         f"p90={stats['p90']:.6f} max={stats['max']:.6f} "
         f"mean={stats['mean']:.6f}"
     )
+
+
+def _atanh(value: float) -> float:
+    from math import log
+
+    return 0.5 * log((1.0 + value) / (1.0 - value))
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -128,6 +136,11 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     source_count_stats = SeriesStats([])
     max_source_share_stats = SeriesStats([])
     tanh_k_stats = SeriesStats([])
+    e_dir_stats = SeriesStats([])
+    e_dir_sign_stats = SeriesStats([])
+    disp_deadband_active = 0
+    eff_rel_abs_all: list[float] = []
+    eff_rel_abs_active: list[float] = []
 
     price_series_counts: Counter[str] = Counter()
     top_source_counts: Counter[str] = Counter()
@@ -203,6 +216,21 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         e_total_stats.add(float(record.get("E_total", 0.0)))
         e_rate_stats.add(float(record.get("E_rate", 0.0)))
         e_spot_share_stats.add(float(record.get("E_spot_share", 0.0)))
+        e_dir_stats.add(float(record.get("E_dir", 0.0)))
+        e_dir_sign_stats.add(float(record.get("E_dir_sign", 0.0)))
+        if record.get("disp_deadband_active"):
+            disp_deadband_active += 1
+        disp_rate_value = float(record.get("disp_rate", 0.0))
+        disp_scale_value = float(record.get("disp_scale", 0.0))
+        effort_rate_value = float(record.get("E_rate", 0.0))
+        effort_scale_value = float(record.get("E_scale", 0.0))
+        eff_rel = (disp_rate_value * effort_scale_value) / (
+            effort_rate_value * disp_scale_value + EPSILON
+        )
+        eff_rel_abs = abs(eff_rel)
+        eff_rel_abs_all.append(eff_rel_abs)
+        if abs(disp_rate_value) > disp_scale_value * EFF_REL_ACTIVE_MULTIPLIER:
+            eff_rel_abs_active.append(eff_rel_abs)
         price_delta_stats.add(float(record.get("delta_price", 0.0)))
         effort_norm_stats.add(float(record.get("effort_norm", 0.0)))
         effort_floor_stats.add(float(record.get("effort_floor", 0.0)))
@@ -243,11 +271,13 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         y_sign = _sign(float(record.get("Y", 0.0)))
         x_raw_sign = _sign(float(record.get("X_raw", 0.0)))
         x_sign = _sign(float(record.get("X", 0.0)))
-        disp_rate = float(record.get("disp_rate", 0.0))
+        disp_rate = disp_rate_value
         disp_rate_sign = _sign(disp_rate)
-        dominance = float(record.get("D", 0.0))
-        dominance_sign = _sign(dominance)
-        disp_rate_dir_sign = _sign(disp_rate * dominance_sign)
+        e_dir_sign_value = record.get("E_dir_sign")
+        if e_dir_sign_value is None:
+            e_dir_sign_value = float(record.get("E_dir", 0.0))
+        e_dir_sign = _sign(float(e_dir_sign_value))
+        disp_rate_dir_sign = _sign(disp_rate * e_dir_sign)
 
         if y_raw_sign != 0 and disp_rate_sign != 0:
             y_raw_disp_mismatch_total += 1
@@ -359,6 +389,24 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     out["y_raw_disp_dir_mismatch_rate"] = _ratio(
         y_raw_disp_dir_mismatch, y_raw_disp_dir_mismatch_total
     )
+    out["disp_deadband_active_rate"] = _ratio(disp_deadband_active, len(records))
+
+    eff_rel_all_sorted = sorted(eff_rel_abs_all)
+    eff_rel_active_sorted = sorted(eff_rel_abs_active)
+    p95_all = _percentile(eff_rel_all_sorted, 0.95) if eff_rel_all_sorted else 0.0
+    if eff_rel_active_sorted:
+        p95_active = _percentile(eff_rel_active_sorted, 0.95)
+    else:
+        p95_active = p95_all
+
+    out["eff_rel_abs_p95_all"] = p95_all
+    out["eff_rel_abs_p95_active"] = p95_active
+    for target in K_RECO_TARGETS:
+        key = f"k_reco_target_{target}"
+        if p95_active <= 0:
+            out[key] = 0.0
+        else:
+            out[key] = _atanh(target) / p95_active
 
     out["sign_flip_rate_per_min"] = {
         "Y_raw": flip_counts["Y_raw"] / (total_duration_s / 60.0)
@@ -373,6 +421,17 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         "X": flip_counts["X"] / (total_duration_s / 60.0)
         if total_duration_s > 0
         else 0.0,
+    }
+    sign_flip_rates = out["sign_flip_rate_per_min"]
+    out["sign_flip_rate_per_min_before_after"] = {
+        "Y_raw": sign_flip_rates["Y_raw"],
+        "Y": sign_flip_rates["Y"],
+        "X_raw": sign_flip_rates["X_raw"],
+        "X": sign_flip_rates["X"],
+    }
+    out["sign_flip_rate_per_min_delta_raw_minus_smoothed"] = {
+        "Y": sign_flip_rates["Y_raw"] - sign_flip_rates["Y"],
+        "X": sign_flip_rates["X_raw"] - sign_flip_rates["X"],
     }
     out["conditional_flip_rate_disp_rate_per_min"] = {
         str(multiplier): {
@@ -424,6 +483,8 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     out["effort_floor"] = _format_summary("effort_floor", effort_floor_stats.summary())
     out["disp_scale"] = _format_summary("disp_scale", disp_scale_stats.summary())
     out["E_scale"] = _format_summary("E_scale", e_scale_stats.summary())
+    out["E_dir"] = _format_summary("E_dir", e_dir_stats.summary())
+    out["E_dir_sign"] = _format_summary("E_dir_sign", e_dir_sign_stats.summary())
     out["halo_raw"] = _format_summary("halo_raw", halo_raw_stats.summary())
     out["halo"] = _format_summary("halo", halo_stats.summary())
     out["source_count_active"] = _format_summary(
@@ -489,12 +550,34 @@ def main() -> None:
     grouped = _iter_symbols(records, symbols if symbols else None)
 
     output_path = Path(args.out) if args.out else _output_path(symbols)
+    majors = {"BTC", "ETH", "SOL"}
+    major_k_values: list[float] = []
+    major_symbols: list[str] = []
+
+    per_symbol_stats: dict[str, dict[str, object]] = {}
+    for symbol, entries in sorted(grouped.items()):
+        stats = _stats_for_symbol(entries)
+        per_symbol_stats[symbol] = stats
+        if symbol in majors:
+            k_07_value = stats.get("k_reco_target_0.7", 0.0)
+            k_07 = float(k_07_value) if isinstance(k_07_value, (int, float)) else 0.0
+            if k_07 > 0:
+                major_k_values.append(k_07)
+                major_symbols.append(symbol)
+
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(f"source_log: {path}\n")
         handle.write(f"generated_at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        for symbol, entries in sorted(grouped.items()):
+        handle.write(f"eff_rel_active_multiplier: {EFF_REL_ACTIVE_MULTIPLIER:.2f}\n")
+        if major_k_values:
+            handle.write(
+                "k_reco_target_0.7_median_majors: "
+                f"{median(major_k_values):.6f}\n"
+            )
+            handle.write(f"majors: {','.join(sorted(set(major_symbols)))}\n")
+
+        for symbol, stats in per_symbol_stats.items():
             handle.write(f"\n== {symbol} ==\n")
-            stats = _stats_for_symbol(entries)
             handle.write(f"records: {stats['records']}\n")
             tick = stats.get("tick_interval_s")
             if isinstance(tick, dict) and tick:
@@ -537,6 +620,30 @@ def main() -> None:
                 "y_raw_disp_dir_mismatch_rate: "
                 f"{stats['y_raw_disp_dir_mismatch_rate']:.2f}\n"
             )
+            handle.write(
+                "disp_deadband_active_rate: "
+                f"{stats['disp_deadband_active_rate']:.2f}\n"
+            )
+            handle.write(
+                "eff_rel_abs_p95_all: "
+                f"{stats['eff_rel_abs_p95_all']:.6f}\n"
+            )
+            handle.write(
+                "eff_rel_abs_p95_active: "
+                f"{stats['eff_rel_abs_p95_active']:.6f}\n"
+            )
+            handle.write(
+                "k_reco_target_0.6: "
+                f"{stats['k_reco_target_0.6']:.6f}\n"
+            )
+            handle.write(
+                "k_reco_target_0.7: "
+                f"{stats['k_reco_target_0.7']:.6f}\n"
+            )
+            handle.write(
+                "k_reco_target_0.8: "
+                f"{stats['k_reco_target_0.8']:.6f}\n"
+            )
             handle.write(f"sign_flip_rate_per_min: {stats['sign_flip_rate_per_min']}\n")
             handle.write(
                 "conditional_flip_rate_disp_rate_per_min: "
@@ -545,6 +652,14 @@ def main() -> None:
             handle.write(
                 "conditional_flip_rate_x_raw_per_min: "
                 f"{stats['conditional_flip_rate_x_raw_per_min']}\n"
+            )
+            handle.write(
+                "sign_flip_rate_per_min_before_after: "
+                f"{stats['sign_flip_rate_per_min_before_after']}\n"
+            )
+            handle.write(
+                "sign_flip_rate_per_min_delta_raw_minus_smoothed: "
+                f"{stats['sign_flip_rate_per_min_delta_raw_minus_smoothed']}\n"
             )
             for key in (
                 "window_ms",
@@ -562,6 +677,8 @@ def main() -> None:
                 "size_raw",
                 "E_total",
                 "E_rate",
+                "E_dir",
+                "E_dir_sign",
                 "E_spot_share",
                 "effort_norm",
                 "effort_floor",

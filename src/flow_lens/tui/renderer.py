@@ -6,6 +6,7 @@ from typing import Any, TypeAlias
 
 from flow_lens.adapters.base import AdapterStats, AdapterStatus
 from flow_lens.engine.state_engine import StateSnapshot
+from flow_lens.tui.metrics import LiveMetricsSnapshot
 
 CursesWindow: TypeAlias = Any
 
@@ -19,6 +20,8 @@ class Renderer:
     def __init__(self, config: RendererConfig = RendererConfig()) -> None:
         self._config = config
         self._colors_ready = False
+        self._last_y: float | None = None
+        self._last_state_id: int | None = None
 
     def draw(
         self,
@@ -30,6 +33,7 @@ class Renderer:
         status_perp: AdapterStatus | None = None,
         spot_stats: AdapterStats | None = None,
         perp_stats: AdapterStats | None = None,
+        metrics: LiveMetricsSnapshot | None = None,
         search_mode: bool = False,
         search_buffer: str = "",
     ) -> None:
@@ -47,12 +51,41 @@ class Renderer:
         map_right = map_left + self._config.width - 1
         map_bottom = map_top + self._config.height - 1
 
-        self._draw_labels(stdscr, map_top, map_left, map_right, map_bottom, maxy, maxx)
         self._draw_axes(stdscr, map_top, map_left)
 
         if state is None:
+            self._last_y = None
+            self._last_state_id = None
+            self._draw_labels(
+                stdscr,
+                map_top,
+                map_left,
+                map_right,
+                map_bottom,
+                maxy,
+                maxx,
+                status_spot=status_spot,
+                status_perp=status_perp,
+            )
             stdscr.refresh()
             return
+
+        is_new_update = id(state) != self._last_state_id
+        if is_new_update:
+            self._last_y = state.y
+            self._last_state_id = id(state)
+
+        self._draw_labels(
+            stdscr,
+            map_top,
+            map_left,
+            map_right,
+            map_bottom,
+            maxy,
+            maxx,
+            status_spot=status_spot,
+            status_perp=status_perp,
+        )
 
         base_x, base_y = _norm_to_grid(state.x, state.y, self._config.width, self._config.height)
         base_x += map_left
@@ -64,10 +97,10 @@ class Renderer:
 
         self._draw_status_bar(
             stdscr,
-            status_spot=status_spot,
-            status_perp=status_perp,
             spot_stats=spot_stats,
             perp_stats=perp_stats,
+            metrics=metrics,
+            symbol=symbol,
             map_left=map_left,
             map_right=map_right,
             map_bottom=map_bottom,
@@ -93,64 +126,44 @@ class Renderer:
         self,
         stdscr: CursesWindow,
         *,
-        status_spot: AdapterStatus | None,
-        status_perp: AdapterStatus | None,
         spot_stats: AdapterStats | None,
         perp_stats: AdapterStats | None,
+        metrics: LiveMetricsSnapshot | None,
+        symbol: str,
         map_left: int,
         map_right: int,
         map_bottom: int,
         maxy: int,
         maxx: int,
     ) -> None:
-        top = map_bottom + 11
-        content = top + 1
-        bottom = top + 2
-        if maxx <= 0 or bottom >= maxy:
+        lines = _status_lines(
+            metrics,
+            symbol,
+            perp_stats,
+            spot_stats,
+        )
+        top = map_bottom + 4
+        if not lines:
             return
-        spot_color = 0
-        perp_color = 0
-        if curses.has_colors():
-            self._ensure_colors()
-            if status_spot is not None:
-                spot_color = curses.color_pair(_status_color(status_spot))
-            if status_perp is not None:
-                perp_color = curses.color_pair(_status_color(status_perp))
-        segments: list[tuple[str, int]] = [
-            (" ", 0),
-            ("Spot", spot_color),
-            (" | Active: ", 0),
-            (_active_text(spot_stats), 0),
-            (" | TBT: ", 0),
-            (_tbt_text(spot_stats), 0),
-            (" | Reconnects: ", 0),
-            (_reconnect_text(spot_stats), 0),
-            (" | ", 0),
-            ("Perp", perp_color),
-            (" | Active: ", 0),
-            (_active_text(perp_stats), 0),
-            (" | TBT: ", 0),
-            (_tbt_text(perp_stats), 0),
-            (" | Reconnects: ", 0),
-            (_reconnect_text(perp_stats), 0),
-            (" ", 0),
-        ]
-        text_len = sum(len(text) for text, _ in segments)
-        inner_width = min(maxx - 2, text_len)
+        inner_width = min(max(len(line) for line in lines), maxx - 2)
         if inner_width <= 0:
             return
-        box_width = inner_width + 2
-        x0 = min(max(0, map_left), maxx - box_width)
+        box_height = len(lines) + 2
+        bottom = top + box_height - 1
+        if bottom >= maxy:
+            return
+        x0 = min(max(0, map_left), maxx - (inner_width + 2))
         if x0 < 0:
             x0 = 0
 
         stdscr.addstr(top, x0, "┌" + "─" * inner_width + "┐")
+        for idx, line in enumerate(lines, start=1):
+            stdscr.addstr(top + idx, x0, "│")
+            _addstr_limited(
+                stdscr, top + idx, x0 + 1, line, x0 + 1 + inner_width
+            )
+            stdscr.addstr(top + idx, x0 + inner_width + 1, "│")
         stdscr.addstr(bottom, x0, "└" + "─" * inner_width + "┘")
-        y = content
-        x = x0 + 1
-        maxx_cap = min(maxx, x0 + 1 + inner_width)
-        for text, attr in segments:
-            x = _addstr_limited(stdscr, y, x, text, maxx_cap, attr)
 
     def _ensure_colors(self) -> None:
         if self._colors_ready:
@@ -173,11 +186,23 @@ class Renderer:
         map_bottom: int,
         maxy: int,
         maxx: int,
+        *,
+        status_spot: AdapterStatus | None,
+        status_perp: AdapterStatus | None,
     ) -> None:
         top = "ACCEPTING"
         bot = "REJECTING"
         left = "PERP"
         right = "SPOT"
+
+        spot_attr = 0
+        perp_attr = 0
+        if curses.has_colors():
+            self._ensure_colors()
+            if status_spot is not None:
+                spot_attr = curses.color_pair(_status_color(status_spot))
+            if status_perp is not None:
+                perp_attr = curses.color_pair(_status_color(status_perp))
 
         tx = map_left + max(0, (self._config.width - len(top)) // 2)
         if map_top - 1 >= 1 and tx + len(top) < maxx:
@@ -188,10 +213,25 @@ class Renderer:
             stdscr.addstr(map_bottom + 1, bx, bot)
 
         if map_left - len(left) - 1 >= 0 and map_top + self._config.height // 2 < maxy:
-            stdscr.addstr(map_top + self._config.height // 2, map_left - len(left) - 1, left)
+            if perp_attr:
+                stdscr.addstr(
+                    map_top + self._config.height // 2,
+                    map_left - len(left) - 1,
+                    left,
+                    perp_attr,
+                )
+            else:
+                stdscr.addstr(
+                    map_top + self._config.height // 2, map_left - len(left) - 1, left
+                )
 
         if map_right + 2 + len(right) < maxx and map_top + self._config.height // 2 < maxy:
-            stdscr.addstr(map_top + self._config.height // 2, map_right + 2, right)
+            if spot_attr:
+                stdscr.addstr(
+                    map_top + self._config.height // 2, map_right + 2, right, spot_attr
+                )
+            else:
+                stdscr.addstr(map_top + self._config.height // 2, map_right + 2, right)
 
     def _draw_axes(self, stdscr: CursesWindow, map_top: int, map_left: int) -> None:
         cx = self._config.width // 2
@@ -277,7 +317,7 @@ def _status_text(status: AdapterStatus) -> str:
     return "R"
 
 
-def _active_text(stats: AdapterStats | None) -> str:
+def _feeds_text(stats: AdapterStats | None) -> str:
     if stats is None:
         return "0/0"
     return f"{stats.active_pairs}/{stats.total_pairs}"
@@ -295,6 +335,91 @@ def _tbt_text(stats: AdapterStats | None) -> str:
     if stats.tbt_ms < 1000:
         return f"{stats.tbt_ms:.0f}ms"
     return f"{stats.tbt_ms / 1000:.1f}s"
+
+
+def _status_lines(
+    metrics: LiveMetricsSnapshot | None,
+    symbol: str,
+    perp_stats: AdapterStats | None,
+    spot_stats: AdapterStats | None,
+) -> list[str]:
+    majors = {"BTC", "ETH", "SOL"}
+    series_target = "<1/m" if symbol.upper() in majors else "<3/m"
+    col_width = 48
+
+    if metrics is None:
+        p95 = p99 = flip_raw = flip_y = deadband = disp_ratio = air_pocket = None
+        persist = None
+        switch_rate = None
+    else:
+        p95 = metrics.y_raw_p95
+        p99 = metrics.y_raw_p99
+        flip_raw = metrics.flip_rate_y_raw
+        flip_y = metrics.flip_rate_y
+        deadband = metrics.deadband_active_rate
+        disp_ratio = metrics.disp_ratio
+        persist = metrics.e_dir_persistence
+        switch_rate = metrics.price_series_switch_rate
+        air_pocket = metrics.air_pocket_active_rate
+
+    line_metrics_1 = (
+        "p95|Y_raw| "
+        f"{_fmt_float(p95, 2)} [0.6-0.8]  "
+        "p99|Y_raw| "
+        f"{_fmt_float(p99, 2)} [<0.9]  "
+        "Flip Y_raw "
+        f"{_fmt_rate(flip_raw)} [3-8]  "
+        "Y "
+        f"{_fmt_rate(flip_y)} [1-4]  "
+        "Deadband "
+        f"{_fmt_float(deadband, 2)} [0.25-0.55]"
+    )
+    line_metrics_2 = (
+        "|disp|/scale "
+        f"{_fmt_float(disp_ratio, 2)} [0.8-2.0]  "
+        "E_dir persist "
+        f"{_fmt_int(persist)} [3-10]  "
+        "Series switch "
+        f"{_fmt_rate(switch_rate)} [{series_target}]  "
+        "Air pocket "
+        f"{_fmt_float(air_pocket, 2)} [<0.2]"
+    )
+    feeds_left = (
+        "Feeds "
+        f"{_feeds_text(perp_stats)}  "
+        "TBT "
+        f"{_tbt_text(perp_stats)}  "
+        "Reconn "
+        f"{_reconnect_text(perp_stats)}"
+    )
+    feeds_right = (
+        "Feeds "
+        f"{_feeds_text(spot_stats)}  "
+        "TBT "
+        f"{_tbt_text(spot_stats)}  "
+        "Reconn "
+        f"{_reconnect_text(spot_stats)}"
+    )
+    line_feeds = f"{feeds_left}".ljust(col_width) + feeds_right
+    return [line_feeds, line_metrics_1, line_metrics_2]
+
+
+def _fmt_float(value: float | None, digits: int) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.{digits}f}"
+
+
+def _fmt_rate(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}/m"
+
+
+def _fmt_int(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return str(value)
 
 
 def _addstr_limited(

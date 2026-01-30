@@ -57,5 +57,29 @@ symbols = [
 
 [runtime]
 tbt_window_multiplier = 4.0
+update_window_seconds = 2.0
+
+effort_floor_multiplier = 0.2
+effort_floor_ticks = 60
+
+smoothing_dominance_alpha = 0.15
+smoothing_effectiveness_alpha = 0.15
+
+dispersion_metric = "hill"
+halo_growth_rate = 0.10
+halo_decay_rate = 0.5
+
+binning_dot_size_thresholds = [0.35, 0.70]
+binning_halo_thresholds = [0.33, 0.66]
+binning_hysteresis_band = 0.05
+
 tanh_k = 0.10
+
 scale_window_seconds = 600.0
+
+disp_scale_multiplier = 0.25    # deadband
+disp_scale_percentile = 0.60
+disp_scale_min_samples = 20
+
+effort_scale_percentile = 0.8
+effort_scale_min_samples = 20

@@ -10,6 +10,7 @@ from flow_lens.engine.buffer import RollingEventBuffer
 from flow_lens.engine.constants import Defaults
 from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
+from flow_lens.models.event import AggressorSide
 from flow_lens.tui.input import InputState
 from flow_lens.tui.renderer import Renderer, RendererConfig
 
@@ -138,6 +139,12 @@ def _efforts_for_step(spec: StepSpec, price: float) -> tuple[list[MockEffort], f
     ratio_spot = e_spot / total if total > 0 else 0.5
     ratio_perp = 1.0 - ratio_spot
 
+    eff_raw = _atanh(y)
+    disp = eff_raw * total
+    if dominance < 0:
+        disp = -disp
+    aggressor_side: AggressorSide = _aggressor_side(y, disp)
+
     weights = spec.source_weights if spec.source_weights else (1.0,)
     weight_sum = sum(weights) or 1.0
     efforts: list[MockEffort] = []
@@ -147,16 +154,33 @@ def _efforts_for_step(spec: StepSpec, price: float) -> tuple[list[MockEffort], f
         perp_value = source_total * ratio_perp
         source_id = f"src{idx}"
         if spot_value > 0:
-            efforts.append(MockEffort(source_id=source_id, side_type="spot", effort_value=spot_value))
+            efforts.append(
+                MockEffort(
+                    source_id=source_id,
+                    side_type="spot",
+                    aggressor_side=aggressor_side,
+                    effort_value=spot_value,
+                )
+            )
         if perp_value > 0:
-            efforts.append(MockEffort(source_id=source_id, side_type="perp", effort_value=perp_value))
-
-    eff_raw = _atanh(y)
-    disp = eff_raw * total
-    if dominance < 0:
-        disp = -disp
+            efforts.append(
+                MockEffort(
+                    source_id=source_id,
+                    side_type="perp",
+                    aggressor_side=aggressor_side,
+                    effort_value=perp_value,
+                )
+            )
     price = price + disp
     return efforts, price
+
+
+def _aggressor_side(y: float, disp: float) -> AggressorSide:
+    if disp == 0.0:
+        return "buy"
+    if y >= 0:
+        return "buy" if disp > 0 else "sell"
+    return "sell" if disp > 0 else "buy"
 
 
 def _build_storyboard_scenarios() -> dict[str, list[StepSpec]]:

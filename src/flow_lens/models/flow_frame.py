@@ -4,12 +4,14 @@ from dataclasses import dataclass
 from typing import Literal, Sequence
 
 SideType = Literal["spot", "perp"]
+AggressorSide = Literal["buy", "sell"]
 
 
 @dataclass(frozen=True)
 class EffortContribution:
     source_id: str
     side_type: SideType
+    aggressor_side: AggressorSide
     effort_value: float
 
 
@@ -27,4 +29,5 @@ class FlowFrame:
     perp_event_count_window: int
     last_spot_event_ts: int | None
     last_perp_event_ts: int | None
+    e_dir: float
     efforts: Sequence[EffortContribution]

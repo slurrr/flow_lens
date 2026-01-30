@@ -1,0 +1,335 @@
+source_log: logs/flow_lens_diagnostics-20260129-141831-p01.jsonl
+generated_at: 2026-01-29 16:23:06
+eff_rel_active_multiplier: 1.00
+k_reco_target_0.7_median_majors: 0.058936
+majors: BTC,ETH,SOL
+
+== ASTER ==
+records: 10
+tick_interval_s: mean=2.00 p50=2.00 max=2.00
+duration_min: 0.30
+price_series_counts: {'spot': 8, 'perp': 2}
+spot_fresh_rate: 0.80 perp_fresh_rate: 1.00
+size_bin_counts: {1: 4, 2: 6}
+top_source_counts: {'binance_spot': 4, 'binance_perp': 6}
+y_near_zero_rate: 0.00
+y_raw_near_zero_rate: 0.20
+gate_low_rate: 0.00
+perp_dominant_spot_missing_rate: 0.20
+price_series_switches: 2 (rate_per_min=6.66)
+y_raw_disp_mismatch_rate: 0.50
+y_raw_disp_dir_mismatch_rate: 0.00
+disp_deadband_active_rate: 0.20
+eff_rel_abs_p95_all: 6.277181
+eff_rel_abs_p95_active: 6.277181
+k_reco_target_0.6: 0.110423
+k_reco_target_0.7: 0.138167
+k_reco_target_0.8: 0.175017
+sign_flip_rate_per_min: {'Y_raw': 3.332407664537629, 'Y': 0.0, 'X_raw': 9.997222993612885, 'X': 0.0}
+conditional_flip_rate_disp_rate_per_min: {'0.5': {'Y_raw': 0.0, 'Y': 0.0}, '1.0': {'Y_raw': 0.0, 'Y': 0.0}}
+conditional_flip_rate_x_raw_per_min: {'dominant': {'Y_raw': 3.332407664537629, 'Y': 0.0}, 'neutral': {'Y_raw': 0.0, 'Y': 0.0}, 'x_min': 0.2}
+sign_flip_rate_per_min_before_after: {'Y_raw': 3.332407664537629, 'Y': 0.0, 'X_raw': 9.997222993612885, 'X': 0.0}
+sign_flip_rate_per_min_delta_raw_minus_smoothed: {'Y': 3.332407664537629, 'X': 9.997222993612885}
+window_ms: min=5092.000000 p10=5094.000000 p50=5100.000000 p90=5101.000000 max=5104.000000 mean=5098.500000
+log_return: min=-0.001617 p10=-0.001617 p50=0.000162 p90=0.001617 max=0.001617 mean=0.000229
+delta_price: min=-0.001000 p10=-0.001000 p50=0.000100 p90=0.001000 max=0.001000 mean=0.000142
+disp: min=-0.000193 p10=-0.000193 p50=0.000032 p90=0.000317 max=0.000317 mean=0.000094
+disp_rate: min=-0.000317 p10=-0.000317 p50=0.000032 p90=0.000317 max=0.000317 mean=0.000045
+eff_raw: min=-1.541078 p10=-1.430779 p50=0.333740 p90=3.121280 max=6.276982 mean=0.926428
+gate: min=1.000000 p10=1.000000 p50=1.000000 p90=1.000000 max=1.000000 mean=1.000000
+tanh_k: min=0.100000 p10=0.100000 p50=0.100000 p90=0.100000 max=0.100000 mean=0.100000
+Y_raw: min=-0.152899 p10=-0.142110 p50=0.033362 p90=0.302372 max=0.556465 mean=0.084683
+Y: min=0.049669 p10=0.053398 p50=0.058434 p90=0.137364 max=0.161604 mean=0.081919
+X_raw: min=-1.000000 p10=-1.000000 p50=-0.771247 p90=0.256017 max=0.881129 mean=-0.330062
+X: min=-0.590328 p10=-0.556505 p50=-0.479704 p90=-0.317361 max=-0.237264 mean=-0.450699
+size_raw: min=0.492731 p10=0.493043 p50=0.878207 p90=1.000000 max=1.000000 mean=0.780011
+E_total: min=3131.108360 p10=3184.662160 p50=6297.647060 p90=18600.571367 max=18605.166867 mean=8598.257653
+E_rate: min=614.183672 p10=624.443561 p50=1234.832757 p90=3645.212943 max=3646.455864 mean=1686.201711
+E_dir: min=-17029.045167 p10=-17013.323867 p50=-4928.910704 p90=4647.546800 max=6297.647060 mean=-3552.876757
+E_dir_sign: min=-1.000000 p10=-1.000000 p50=-1.000000 p90=1.000000 max=1.000000 mean=0.000000
+E_spot_share: min=0.000000 p10=0.000000 p50=0.114376 p90=0.628008 max=0.940564 mean=0.334969
+effort_norm: min=1.527683 p10=1.592428 p50=3.202419 p90=9.456729 max=9.741882 mean=4.314446
+effort_floor: min=74.835909 p10=77.118757 p50=77.118757 p90=82.036826 max=82.036826 mean=78.825522
+disp_scale: min=0.000032 p10=0.000032 p50=0.000032 p90=0.000032 max=0.000032 mean=0.000032
+E_scale: min=374.179546 p10=385.593787 p50=385.593787 p90=410.184129 max=410.184129 mean=394.127609
+halo_raw: min=0.000000 p10=0.000000 p50=0.234305 p90=0.888408 max=0.888674 mean=0.403343
+halo: min=0.056898 p10=0.089710 p50=0.154169 p90=0.202640 max=0.227593 mean=0.148936
+source_count_active: min=1.000000 p10=1.000000 p50=2.000000 p90=2.000000 max=2.000000 mean=1.800000
+max_source_share: min=0.621392 p10=0.621545 p50=0.885624 p90=1.000000 max=1.000000 mean=0.827333
+spot_event_count_window: min=0.000000 p10=0.000000 p50=2.000000 p90=6.000000 max=6.000000 mean=2.700000
+perp_event_count_window: min=6.000000 p10=7.000000 p50=11.000000 p90=12.000000 max=14.000000 mean=10.200000
+
+== BTC ==
+records: 11
+tick_interval_s: mean=2.00 p50=2.00 max=2.00
+duration_min: 0.33
+price_series_counts: {'spot': 9, 'perp': 2}
+spot_fresh_rate: 0.82 perp_fresh_rate: 1.00
+size_bin_counts: {2: 8, 1: 3}
+top_source_counts: {'binance_spot': 7, 'binance_perp': 4}
+y_near_zero_rate: 0.00
+y_raw_near_zero_rate: 0.55
+gate_low_rate: 0.00
+perp_dominant_spot_missing_rate: 0.18
+price_series_switches: 3 (rate_per_min=9.00)
+y_raw_disp_mismatch_rate: 0.80
+y_raw_disp_dir_mismatch_rate: 0.00
+disp_deadband_active_rate: 0.55
+eff_rel_abs_p95_all: 240.676155
+eff_rel_abs_p95_active: 240.676155
+k_reco_target_0.6: 0.002880
+k_reco_target_0.7: 0.003604
+k_reco_target_0.8: 0.004565
+sign_flip_rate_per_min: {'Y_raw': 0.0, 'Y': 0.0, 'X_raw': 8.997300809757073, 'X': 8.997300809757073}
+conditional_flip_rate_disp_rate_per_min: {'0.5': {'Y_raw': 0.0, 'Y': 0.0}, '1.0': {'Y_raw': 0.0, 'Y': 0.0}}
+conditional_flip_rate_x_raw_per_min: {'dominant': {'Y_raw': 0.0, 'Y': 0.0}, 'neutral': {'Y_raw': 0.0, 'Y': 0.0}, 'x_min': 0.2}
+sign_flip_rate_per_min_before_after: {'Y_raw': 0.0, 'Y': 0.0, 'X_raw': 8.997300809757073, 'X': 8.997300809757073}
+sign_flip_rate_per_min_delta_raw_minus_smoothed: {'Y': 0.0, 'X': 0.0}
+window_ms: min=2000.000000 p10=2000.000000 p50=2000.000000 p90=2000.000000 max=2000.000000 mean=2000.000000
+log_return: min=-0.002875 p10=-0.002792 p50=0.000000 p90=0.000001 max=0.002753 mean=-0.000514
+delta_price: min=-243.030000 p10=-235.990000 p50=0.000000 p90=0.100000 max=232.650000 mean=-43.476364
+disp: min=0.000000 p10=0.000000 p50=0.000000 p90=0.001396 max=0.001438 mean=0.000508
+disp_rate: min=-0.001438 p10=-0.001396 p50=0.000000 p90=0.000001 max=0.001376 mean=-0.000257
+eff_raw: min=0.000000 p10=0.000000 p50=0.000000 p90=46.474494 max=240.671225 mean=30.265980
+gate: min=0.430119 p10=0.585684 p50=1.000000 p90=1.000000 max=1.000000 mean=0.845537
+tanh_k: min=0.100000 p10=0.100000 p50=0.100000 p90=0.100000 max=0.100000 mean=0.100000
+Y_raw: min=0.000000 p10=0.000000 p50=0.000000 p90=0.999816 max=1.000000 mean=0.364989
+Y: min=0.213853 p10=0.251592 p50=0.343453 p90=0.409675 max=0.422712 mean=0.336382
+X_raw: min=-1.000000 p10=-1.000000 p50=0.415387 p90=0.880951 max=0.910692 mean=0.081881
+X: min=-0.037322 p10=-0.011808 p50=0.178616 p90=0.337239 max=0.367654 mean=0.170392
+size_raw: min=0.358347 p10=0.397473 p50=0.774911 p90=1.000000 max=1.000000 mean=0.775090
+E_total: min=31005.282600 p10=42375.850814 p50=196777.379925 p90=530838.041036 max=627520.631233 mean=233588.377707
+E_rate: min=15502.641292 p10=21187.925397 p50=98388.689913 p90=265419.020385 max=313760.315459 mean=116794.188795
+E_dir: min=-216657.058034 p10=-98634.291329 p50=-52033.935961 p90=55354.647569 max=55678.255400 mean=-33948.279077
+E_dir_sign: min=-1.000000 p10=-1.000000 p50=-1.000000 p90=1.000000 max=1.000000 mean=-0.090909
+E_spot_share: min=0.000000 p10=0.000000 p50=0.707693 p90=0.940476 max=0.955346 mean=0.540941
+effort_norm: min=0.086024 p10=0.117137 p50=0.523764 p90=1.385526 max=1.709454 mean=0.627462
+effort_floor: min=36042.664140 p10=36176.388154 p50=37190.350487 p90=37569.858417 max=38313.118336 mean=37050.611810
+disp_scale: min=0.000048 p10=0.000048 p50=0.000048 p90=0.000049 max=0.000049 mean=0.000048
+E_scale: min=180213.320702 p10=180881.940770 p50=185951.752433 p90=187849.292084 max=191565.591681 mean=185253.059052
+halo_raw: min=0.000000 p10=0.000000 p50=0.469957 p90=0.951297 max=0.967556 mean=0.403010
+halo: min=0.055098 p10=0.062196 p50=0.183392 p90=0.273506 max=0.273907 mean=0.168225
+source_count_active: min=1.000000 p10=1.000000 p50=2.000000 p90=2.000000 max=2.000000 mean=1.818182
+max_source_share: min=0.564206 p10=0.578992 p50=0.800243 p90=1.000000 max=1.000000 mean=0.825297
+spot_event_count_window: min=0.000000 p10=0.000000 p50=19.000000 p90=59.000000 max=95.000000 mean=28.181818
+perp_event_count_window: min=6.000000 p10=7.000000 p50=9.000000 p90=51.000000 max=52.000000 mean=23.272727
+
+== ETH ==
+records: 11
+tick_interval_s: mean=2.00 p50=2.00 max=2.00
+duration_min: 0.33
+price_series_counts: {'spot': 11}
+spot_fresh_rate: 1.00 perp_fresh_rate: 1.00
+size_bin_counts: {2: 9, 1: 2}
+top_source_counts: {'binance_spot': 10, 'binance_perp': 1}
+y_near_zero_rate: 0.55
+y_raw_near_zero_rate: 0.45
+gate_low_rate: 0.00
+perp_dominant_spot_missing_rate: 0.00
+price_series_switches: 0 (rate_per_min=0.00)
+y_raw_disp_mismatch_rate: 0.67
+y_raw_disp_dir_mismatch_rate: 0.00
+disp_deadband_active_rate: 0.45
+eff_rel_abs_p95_all: 3.358983
+eff_rel_abs_p95_active: 3.358983
+k_reco_target_0.6: 0.206356
+k_reco_target_0.7: 0.258203
+k_reco_target_0.8: 0.327067
+sign_flip_rate_per_min: {'Y_raw': 11.996401079676096, 'Y': 14.99550134959512, 'X_raw': 5.998200539838048, 'X': 0.0}
+conditional_flip_rate_disp_rate_per_min: {'0.5': {'Y_raw': 9.99750062484379, 'Y': 9.99750062484379}, '1.0': {'Y_raw': 0.0, 'Y': 0.0}}
+conditional_flip_rate_x_raw_per_min: {'dominant': {'Y_raw': 6.664815329075258, 'Y': 9.997222993612885}, 'neutral': {'Y_raw': 0.0, 'Y': 0.0}, 'x_min': 0.2}
+sign_flip_rate_per_min_before_after: {'Y_raw': 11.996401079676096, 'Y': 14.99550134959512, 'X_raw': 5.998200539838048, 'X': 0.0}
+sign_flip_rate_per_min_delta_raw_minus_smoothed: {'Y': -2.9991002699190243, 'X': 5.998200539838048}
+window_ms: min=2000.000000 p10=2000.000000 p50=2000.000000 p90=2000.000000 max=2000.000000 mean=2000.000000
+log_return: min=-0.001589 p10=-0.001386 p50=0.000000 p90=0.001121 max=0.001312 mean=-0.000289
+delta_price: min=-4.480000 p10=-3.910000 p50=0.000000 p90=3.160000 max=3.700000 mean=-0.815455
+disp: min=-0.000686 p10=-0.000683 p50=0.000000 p90=0.000693 max=0.000794 mean=-0.000100
+disp_rate: min=-0.000794 p10=-0.000693 p50=0.000000 p90=0.000560 max=0.000656 mean=-0.000145
+eff_raw: min=-3.358978 p10=-0.715124 p50=0.000000 p90=0.464237 max=1.672394 mean=-0.286837
+gate: min=0.266003 p10=1.000000 p50=1.000000 p90=1.000000 max=1.000000 mean=0.933273
+tanh_k: min=0.100000 p10=0.100000 p50=0.100000 p90=0.100000 max=0.100000 mean=0.100000
+Y_raw: min=-0.323810 p10=-0.071391 p50=0.000000 p90=0.046390 max=0.165698 mean=-0.027702
+Y: min=-0.021673 p10=-0.018422 p50=-0.002683 p90=0.049828 max=0.058621 mean=0.009208
+X_raw: min=-0.107478 p10=0.380234 p50=0.917020 p90=0.962649 max=0.996595 mean=0.723201
+X: min=0.555771 p10=0.609958 p50=0.663644 p90=0.706063 max=0.706163 mean=0.650030
+size_raw: min=0.327838 p10=0.616631 p50=0.957611 p90=0.981147 max=0.998296 mean=0.837228
+E_total: min=23663.196097 p10=135429.060030 p50=607223.025585 p90=790725.837446 max=1138161.917951 mean=560981.637829
+E_rate: min=11831.598043 p10=67714.529981 p50=303611.512641 p90=395362.918525 max=569080.958691 mean=280490.818774
+E_dir: min=-394677.252885 p10=-227285.769010 p50=-20973.005119 p90=218082.377952 max=227519.140676 mean=-26098.725470
+E_dir_sign: min=-1.000000 p10=-1.000000 p50=-1.000000 p90=1.000000 max=1.000000 mean=-0.090909
+E_spot_share: min=0.446261 p10=0.690117 p50=0.958510 p90=0.981325 max=0.998298 mean=0.861600
+effort_norm: min=0.053201 p10=0.303038 p50=1.358732 p90=1.769341 max=2.529047 mean=1.246418
+effort_floor: min=44479.246994 p10=44479.246994 p50=44690.409085 p90=45513.722450 max=45513.722450 mean=44933.497078
+disp_scale: min=0.000672 p10=0.000672 p50=0.000674 p90=0.000677 max=0.000677 mean=0.000675
+E_scale: min=222396.234968 p10=222396.234968 p50=223452.045425 p90=227568.612248 max=227568.612248 mean=224667.485390
+halo_raw: min=0.003411 p10=0.038048 p50=0.086410 p90=0.747369 max=0.977161 mean=0.293886
+halo: min=0.082790 p10=0.089999 p50=0.124999 p90=0.184780 max=0.237930 mean=0.138227
+source_count_active: min=2.000000 p10=2.000000 p50=2.000000 p90=2.000000 max=2.000000 mean=2.000000
+max_source_share: min=0.553739 p10=0.690117 p50=0.958510 p90=0.981325 max=0.998298 mean=0.871371
+spot_event_count_window: min=2.000000 p10=29.000000 p50=86.000000 p90=163.000000 max=203.000000 mean=99.454545
+perp_event_count_window: min=4.000000 p10=6.000000 p50=9.000000 p90=72.000000 max=78.000000 mean=21.181818
+
+== SHIB ==
+records: 11
+tick_interval_s: mean=2.00 p50=2.00 max=2.00
+duration_min: 0.33
+price_series_counts: {'perp': 8, 'spot': 3}
+spot_fresh_rate: 0.27 perp_fresh_rate: 1.00
+size_bin_counts: {2: 11}
+top_source_counts: {'binance_perp': 11}
+y_near_zero_rate: 0.00
+y_raw_near_zero_rate: 1.00
+gate_low_rate: 0.09
+perp_dominant_spot_missing_rate: 0.73
+price_series_switches: 1 (rate_per_min=3.00)
+y_raw_disp_mismatch_rate: 1.00
+y_raw_disp_dir_mismatch_rate: 0.00
+disp_deadband_active_rate: 0.91
+eff_rel_abs_p95_all: 0.072389
+eff_rel_abs_p95_active: 0.072389
+k_reco_target_0.6: 9.575327
+k_reco_target_0.7: 11.981129
+k_reco_target_0.8: 15.176534
+sign_flip_rate_per_min: {'Y_raw': 0.0, 'Y': 0.0, 'X_raw': 0.0, 'X': 0.0}
+conditional_flip_rate_disp_rate_per_min: {'0.5': {'Y_raw': 0.0, 'Y': 0.0}, '1.0': {'Y_raw': 0.0, 'Y': 0.0}}
+conditional_flip_rate_x_raw_per_min: {'dominant': {'Y_raw': 0.0, 'Y': 0.0}, 'neutral': {'Y_raw': 0.0, 'Y': 0.0}, 'x_min': 0.2}
+sign_flip_rate_per_min_before_after: {'Y_raw': 0.0, 'Y': 0.0, 'X_raw': 0.0, 'X': 0.0}
+sign_flip_rate_per_min_delta_raw_minus_smoothed: {'Y': 0.0, 'X': 0.0}
+window_ms: min=4262.000000 p10=4264.000000 p50=4267.000000 p90=4268.000000 max=4269.000000 mean=4266.181818
+log_return: min=-0.000273 p10=0.000000 p50=0.000000 p90=0.000000 max=0.000000 mean=-0.000025
+delta_price: min=-0.000002 p10=0.000000 p50=0.000000 p90=0.000000 max=0.000000 mean=-0.000000
+disp: min=0.000000 p10=0.000000 p50=0.000000 p90=0.000000 max=0.000064 mean=0.000006
+disp_rate: min=-0.000064 p10=0.000000 p50=0.000000 p90=0.000000 max=0.000000 mean=-0.000006
+eff_raw: min=0.000000 p10=0.000000 p50=0.000000 p90=0.000000 max=0.072387 mean=0.006581
+gate: min=0.128883 p10=1.000000 p50=1.000000 p90=1.000000 max=1.000000 mean=0.920808
+tanh_k: min=0.100000 p10=0.100000 p50=0.100000 p90=0.100000 max=0.100000 mean=0.100000
+Y_raw: min=0.000000 p10=0.000000 p50=0.000000 p90=0.000000 max=0.007239 mean=0.000658
+Y: min=0.015702 p10=0.018473 p50=0.033886 p90=0.064915 max=0.076371 mean=0.038854
+X_raw: min=-1.000000 p10=-1.000000 p50=-1.000000 p90=-0.963913 max=-0.593220 mean=-0.958134
+X: min=-0.942555 p10=-0.938786 p50=-0.890155 p90=-0.817317 max=-0.785078 mean=-0.884465
+size_raw: min=0.770208 p10=0.981791 p50=1.000000 p90=1.000000 max=1.000000 mean=0.976648
+E_total: min=7.603204 p10=430.607356 p50=877.770334 p90=8304.981535 max=8376.384624 mean=2649.855453
+E_rate: min=1.781862 p10=100.915715 p50=205.663152 p90=1947.240688 max=1963.982326 mean=621.287536
+E_dir: min=-6614.489179 p10=-6537.933608 p50=414.696404 p90=1046.735155 max=1461.690818 mean=-1226.982943
+E_dir_sign: min=-1.000000 p10=-1.000000 p50=1.000000 p90=1.000000 max=1.000000 mean=0.272727
+E_spot_share: min=0.000000 p10=0.000000 p50=0.000000 p90=0.018043 max=0.203390 mean=0.020933
+effort_norm: min=0.025777 p10=1.454492 p50=3.032062 p90=26.812123 max=27.697106 mean=8.692034
+effort_floor: min=13.565895 p10=13.565895 p50=13.825373 p90=14.649957 max=14.649957 mean=13.981962
+disp_scale: min=0.000032 p10=0.000032 p50=0.000032 p90=0.000032 max=0.000032 mean=0.000032
+E_scale: min=67.829476 p10=67.829476 p50=69.126866 p90=73.249787 max=73.249787 mean=69.909811
+halo_raw: min=0.000000 p10=0.000000 p50=0.000000 p90=0.036738 max=0.479388 mean=0.048541
+halo: min=0.000034 p10=0.000069 p50=0.001098 p90=0.005305 max=0.052714 mean=0.006235
+source_count_active: min=1.000000 p10=1.000000 p50=1.000000 p90=2.000000 max=2.000000 mean=1.272727
+max_source_share: min=0.796610 p10=0.981957 p50=1.000000 p90=1.000000 max=1.000000 mean=0.979067
+spot_event_count_window: min=0.000000 p10=0.000000 p50=0.000000 p90=2.000000 max=2.000000 mean=0.454545
+perp_event_count_window: min=5.000000 p10=5.000000 p50=8.000000 p90=10.000000 max=11.000000 mean=7.727273
+
+== SOL ==
+records: 11
+tick_interval_s: mean=2.00 p50=2.00 max=2.00
+duration_min: 0.33
+price_series_counts: {'spot': 9, 'perp': 2}
+spot_fresh_rate: 0.82 perp_fresh_rate: 1.00
+size_bin_counts: {2: 7, 1: 4}
+top_source_counts: {'binance_perp': 8, 'binance_spot': 3}
+y_near_zero_rate: 0.00
+y_raw_near_zero_rate: 0.64
+gate_low_rate: 0.00
+perp_dominant_spot_missing_rate: 0.18
+price_series_switches: 3 (rate_per_min=9.00)
+y_raw_disp_mismatch_rate: 1.00
+y_raw_disp_dir_mismatch_rate: 0.00
+disp_deadband_active_rate: 0.64
+eff_rel_abs_p95_all: 14.715897
+eff_rel_abs_p95_active: 14.715897
+k_reco_target_0.6: 0.047102
+k_reco_target_0.7: 0.058936
+k_reco_target_0.8: 0.074655
+sign_flip_rate_per_min: {'Y_raw': 8.997300809757073, 'Y': 0.0, 'X_raw': 5.998200539838048, 'X': 0.0}
+conditional_flip_rate_disp_rate_per_min: {'0.5': {'Y_raw': 14.996250937265684, 'Y': 0.0}, '1.0': {'Y_raw': 14.996250937265684, 'Y': 0.0}}
+conditional_flip_rate_x_raw_per_min: {'dominant': {'Y_raw': 4.283878337855206, 'Y': 0.0}, 'neutral': {'Y_raw': 0.0, 'Y': 0.0}, 'x_min': 0.2}
+sign_flip_rate_per_min_before_after: {'Y_raw': 8.997300809757073, 'Y': 0.0, 'X_raw': 5.998200539838048, 'X': 0.0}
+sign_flip_rate_per_min_delta_raw_minus_smoothed: {'Y': 8.997300809757073, 'X': 5.998200539838048}
+window_ms: min=2000.000000 p10=2000.000000 p50=2000.000000 p90=2000.000000 max=2000.000000 mean=2000.000000
+log_return: min=-0.001362 p10=-0.000425 p50=0.000000 p90=0.001022 max=0.001107 mean=0.000039
+delta_price: min=-0.160000 p10=-0.050000 p50=0.000000 p90=0.120000 max=0.130000 mean=0.004545
+disp: min=-0.000554 p10=-0.000511 p50=0.000000 p90=0.000213 max=0.000681 mean=-0.000016
+disp_rate: min=-0.000681 p10=-0.000213 p50=0.000000 p90=0.000511 max=0.000554 mean=0.000019
+eff_raw: min=-1.966297 p10=-0.983636 p50=0.000000 p90=0.267234 max=14.715724 mean=1.093911
+gate: min=1.000000 p10=1.000000 p50=1.000000 p90=1.000000 max=1.000000 mean=1.000000
+tanh_k: min=0.100000 p10=0.100000 p50=0.100000 p90=0.100000 max=0.100000 mean=0.100000
+Y_raw: min=-0.194134 p10=-0.098048 p50=0.000000 p90=0.026717 max=0.899877 mean=0.057674
+Y: min=0.027679 p10=0.032563 p50=0.053024 p90=0.105612 max=0.158508 mean=0.065615
+X_raw: min=-1.000000 p10=-1.000000 p50=-0.323360 p90=0.427833 max=0.763067 mean=-0.357816
+X: min=-0.502189 p10=-0.481161 p50=-0.362686 p90=-0.140666 max=-0.132527 mean=-0.343156
+size_raw: min=0.232882 p10=0.293953 p50=0.808684 p90=1.000000 max=1.000000 mean=0.712381
+E_total: min=8667.876500 p10=10727.841400 p50=32055.808240 p90=153529.143130 max=234642.509640 mean=60473.944772
+E_rate: min=4333.938248 p10=5363.920697 p50=16027.904112 p90=76764.571527 max=117321.254761 mean=30236.972371
+E_dir: min=-162736.515860 p10=-78969.540760 p50=-3819.508020 p90=9750.740600 max=11005.121960 mean=-30606.905714
+E_dir_sign: min=-1.000000 p10=-1.000000 p50=-1.000000 p90=1.000000 max=1.000000 mean=-0.272727
+E_spot_share: min=0.000000 p10=0.000000 p50=0.338320 p90=0.713916 max=0.881533 mean=0.321092
+effort_norm: min=0.356239 p10=0.442872 p50=1.323342 p90=6.098187 max=9.333109 mean=2.437568
+effort_floor: min=2422.337133 p10=2422.337133 p50=2433.163617 p90=2514.087294 max=2517.619469 mean=2451.617914
+disp_scale: min=0.000085 p10=0.000085 p50=0.000085 p90=0.000085 max=0.000085 mean=0.000085
+E_scale: min=12111.685664 p10=12111.685664 p50=12165.818084 p90=12570.436469 max=12588.097344 mean=12258.089570
+halo_raw: min=0.000000 p10=0.000000 p50=0.400879 p90=0.985178 max=0.994135 mean=0.468391
+halo: min=0.108930 p10=0.146705 p50=0.201090 p90=0.280395 max=0.343498 mean=0.216629
+source_count_active: min=1.000000 p10=1.000000 p50=2.000000 p90=2.000000 max=2.000000 mean=1.818182
+max_source_share: min=0.527117 p10=0.543204 p50=0.826985 p90=1.000000 max=1.000000 mean=0.792102
+spot_event_count_window: min=0.000000 p10=0.000000 p50=5.000000 p90=22.000000 max=31.000000 mean=8.363636
+perp_event_count_window: min=6.000000 p10=6.000000 p50=10.000000 p90=13.000000 max=14.000000 mean=9.545455
+
+== XPL ==
+records: 7
+tick_interval_s: mean=3.00 p50=2.00 max=6.00
+duration_min: 0.30
+price_series_counts: {'spot': 6, 'perp': 1}
+spot_fresh_rate: 0.86 perp_fresh_rate: 1.00
+size_bin_counts: {1: 3, 2: 4}
+top_source_counts: {'binance_spot': 3, 'binance_perp': 4}
+y_near_zero_rate: 0.00
+y_raw_near_zero_rate: 0.86
+gate_low_rate: 0.14
+perp_dominant_spot_missing_rate: 0.14
+price_series_switches: 2 (rate_per_min=6.66)
+y_raw_disp_mismatch_rate: 1.00
+y_raw_disp_dir_mismatch_rate: 0.00
+disp_deadband_active_rate: 0.71
+eff_rel_abs_p95_all: 3.886749
+eff_rel_abs_p95_active: 3.886749
+k_reco_target_0.6: 0.178336
+k_reco_target_0.7: 0.223143
+k_reco_target_0.8: 0.282656
+sign_flip_rate_per_min: {'Y_raw': 0.0, 'Y': 3.332407664537629, 'X_raw': 9.997222993612885, 'X': 9.997222993612885}
+conditional_flip_rate_disp_rate_per_min: {'0.5': {'Y_raw': 0.0, 'Y': 0.0}, '1.0': {'Y_raw': 0.0, 'Y': 0.0}}
+conditional_flip_rate_x_raw_per_min: {'dominant': {'Y_raw': 0.0, 'Y': 4.998750312421895}, 'neutral': {'Y_raw': 0.0, 'Y': 0.0}, 'x_min': 0.2}
+sign_flip_rate_per_min_before_after: {'Y_raw': 0.0, 'Y': 3.332407664537629, 'X_raw': 9.997222993612885, 'X': 9.997222993612885}
+sign_flip_rate_per_min_delta_raw_minus_smoothed: {'Y': -3.332407664537629, 'X': 0.0}
+window_ms: min=7569.000000 p10=7570.000000 p50=7571.000000 p90=7573.000000 max=7576.000000 mean=7571.571429
+log_return: min=0.000000 p10=0.000000 p50=0.000000 p90=0.000792 max=0.001584 mean=0.000339
+delta_price: min=0.000000 p10=0.000000 p50=0.000000 p90=0.000100 max=0.000200 mean=0.000043
+disp: min=-0.000209 p10=-0.000105 p50=0.000000 p90=0.000000 max=0.000000 mean=-0.000045
+disp_rate: min=0.000000 p10=0.000000 p50=0.000000 p90=0.000105 max=0.000209 mean=0.000045
+eff_raw: min=-3.886712 p10=-0.062435 p50=0.000000 p90=0.000000 max=0.000000 mean=-0.564164
+gate: min=0.188186 p10=0.277608 p50=0.384521 p90=1.000000 max=1.000000 mean=0.601348
+tanh_k: min=0.100000 p10=0.100000 p50=0.100000 p90=0.100000 max=0.100000 mean=0.100000
+Y_raw: min=-0.370214 p10=-0.006243 p50=0.000000 p90=0.000000 max=0.000000 mean=-0.053780
+Y: min=-0.044635 p10=-0.038877 p50=0.015082 p90=0.020875 max=0.024559 mean=0.001081
+X_raw: min=-1.000000 p10=-0.784499 p50=-0.176899 p90=0.239181 max=0.635907 mean=-0.239440
+X: min=-0.200234 p10=-0.196734 p50=-0.090715 p90=0.053586 max=0.069747 mean=-0.063314
+size_raw: min=0.401655 p10=0.420594 p50=0.797438 p90=0.885720 max=1.000000 mean=0.694447
+E_total: min=42.310500 p10=62.440140 p50=86.441540 p90=568.897100 max=17649.380850 mean=2700.123873
+E_rate: min=5.589234 p10=8.245100 p50=11.420470 p90=75.131683 max=2329.643723 mean=356.419541
+E_dir: min=-17604.923250 p10=-513.830300 p50=-39.706140 p90=-13.945340 max=42.310500 mean=-2643.541473
+E_dir_sign: min=-1.000000 p10=-1.000000 p50=-1.000000 p90=-1.000000 max=1.000000 mean=-0.714286
+E_spot_share: min=0.000000 p10=0.107750 p50=0.411550 p90=0.619591 max=0.817954 mean=0.380280
+effort_norm: min=0.037637 p10=0.055522 p50=0.076904 p90=0.505928 max=15.746473 mean=2.408471
+effort_floor: min=29.589403 p10=29.700547 p50=29.700547 p90=29.700547 max=29.799068 mean=29.698744
+disp_scale: min=0.000106 p10=0.000106 p50=0.000106 p90=0.000106 max=0.000106 mean=0.000106
+E_scale: min=147.947016 p10=148.502735 p50=148.502735 p90=148.502735 max=148.995338 mean=148.493719
+halo_raw: min=0.000000 p10=0.238054 p50=0.424118 p90=0.939312 max=0.949268 mean=0.531597
+halo: min=0.106841 p10=0.131950 p50=0.152577 p90=0.213682 max=0.238943 mean=0.163384
+source_count_active: min=1.000000 p10=2.000000 p50=2.000000 p90=2.000000 max=2.000000 mean=1.857143
+max_source_share: min=0.580663 p10=0.588450 p50=0.817954 p90=0.892250 max=1.000000 mean=0.767779
+spot_event_count_window: min=0.000000 p10=1.000000 p50=1.000000 p90=2.000000 max=10.000000 mean=2.285714
+perp_event_count_window: min=2.000000 p10=2.000000 p50=3.000000 p90=4.000000 max=4.000000 mean=3.142857

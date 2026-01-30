@@ -22,9 +22,17 @@ from flow_lens.adapters import (
 from flow_lens.config import AppConfig, load_app_config
 from flow_lens.engine.buffer import RollingEventBuffer
 from flow_lens.engine.constants import (
+    Binning,
     Defaults,
+    DispScaleConfig,
+    EffectivenessDeadband,
     EffectivenessScaling,
+    EffortFloor,
+    EffortScaleConfig,
+    HaloDynamics,
     InputNormalization,
+    Smoothing,
+    TimeDomain,
 )
 from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
@@ -37,6 +45,7 @@ from flow_lens.symbols import (
     log_resolution,
 )
 from flow_lens.tui.input import InputState
+from flow_lens.tui.metrics import LiveMetrics
 from flow_lens.tui.renderer import Renderer, RendererConfig
 
 
@@ -66,28 +75,58 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     stdscr.keypad(True)
     curses.curs_set(0)
 
-    defaults = Defaults()
-    update_interval_s = defaults.time_domain.update_window_seconds
-    window_ms = int(defaults.time_domain.update_window_seconds * 1000)
-
     config = load_app_config()
+    update_interval_s = config.update_window_seconds
+    window_ms = int(config.update_window_seconds * 1000)
     defaults = Defaults(
-        time_domain=defaults.time_domain,
-        effort_floor=defaults.effort_floor,
-        dispersion_metric=defaults.dispersion_metric,
-        smoothing=defaults.smoothing,
+        time_domain=TimeDomain(update_window_seconds=config.update_window_seconds),
+        effort_floor=EffortFloor(
+            rolling_window_ticks=config.effort_floor_ticks,
+            multiplier_alpha=config.effort_floor_multiplier,
+        ),
+        dispersion_metric=config.dispersion_metric,
+        smoothing=Smoothing(
+            dominance_alpha=config.smoothing_dominance_alpha,
+            effectiveness_alpha=config.smoothing_effectiveness_alpha,
+        ),
         effectiveness_scaling=EffectivenessScaling(tanh_k=config.tanh_k),
         input_normalization=InputNormalization(
             scale_window_seconds=config.scale_window_seconds,
         ),
-        halo_dynamics=defaults.halo_dynamics,
-        binning=defaults.binning,
+        effectiveness_deadband=EffectivenessDeadband(
+            disp_scale_multiplier=config.disp_scale_multiplier,
+        ),
+        disp_scale=DispScaleConfig(
+            percentile=config.disp_scale_percentile,
+            min_samples=config.disp_scale_min_samples,
+        ),
+        effort_scale=EffortScaleConfig(
+            percentile=config.effort_scale_percentile,
+            min_samples=config.effort_scale_min_samples,
+        ),
+        halo_dynamics=HaloDynamics(
+            growth_rate=config.halo_growth_rate,
+            decay_rate=config.halo_decay_rate,
+        ),
+        binning=Binning(
+            dot_size_thresholds=config.binning_dot_size_thresholds,
+            halo_thresholds=config.binning_halo_thresholds,
+            hysteresis_band=config.binning_hysteresis_band,
+        ),
     )
     logging.info(
-        "Runtime config: tanh_k=%.3f tbt_window_multiplier=%.3f scale_window_seconds=%.3f",
+        "Runtime config: tanh_k=%.3f tbt_window_multiplier=%.3f "
+        "scale_window_seconds=%.3f disp_scale_multiplier=%.3f "
+        "disp_scale_percentile=%.3f disp_scale_min_samples=%d "
+        "effort_scale_percentile=%.3f effort_scale_min_samples=%d",
         config.tanh_k,
         config.tbt_window_multiplier,
         config.scale_window_seconds,
+        config.disp_scale_multiplier,
+        config.disp_scale_percentile,
+        config.disp_scale_min_samples,
+        config.effort_scale_percentile,
+        config.effort_scale_min_samples,
     )
     base_symbols = _collect_symbols(config)
 
@@ -111,6 +150,7 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     runtime = _init_runtime(base_symbols, window_ms, symbol_maps, defaults)
     input_state = InputState(symbols=base_symbols)
     renderer = Renderer(RendererConfig())
+    live_metrics = LiveMetrics()
     diagnostics: DiagnosticLogger | None = None
     if diagnostics_enabled:
         diagnostics = DiagnosticLogger(
@@ -143,7 +183,14 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
                 window_ms,
                 config.tbt_window_multiplier,
             )
-            _update_state(runtime, now_ms, tbt_cutoffs, tbt_windows, diagnostics)
+            _update_state(
+                runtime,
+                now_ms,
+                tbt_cutoffs,
+                tbt_windows,
+                diagnostics,
+                live_metrics,
+            )
 
         if not reported_missing and now - start_time > 30:
             _report_missing(runtime, supervisor, prefix="No events yet")
@@ -170,6 +217,7 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
                 spot_stats = supervisor.spot.stats_for(now_ms, symbols=spot_actuals)
             if supervisor.perp is not None:
                 perp_stats = supervisor.perp.stats_for(now_ms, symbols=perp_actuals)
+            metrics_snapshot = live_metrics.snapshot(symbol)
             renderer.draw(
                 stdscr,
                 symbol,
@@ -178,6 +226,7 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
                 status_perp=status_perp,
                 spot_stats=spot_stats,
                 perp_stats=perp_stats,
+                metrics=metrics_snapshot,
                 search_mode=input_state.search_mode,
                 search_buffer=input_state.search_buffer,
             )
@@ -337,15 +386,17 @@ def _update_state(
     tbt_cutoffs: dict[str, int],
     tbt_windows: dict[str, int],
     diagnostics: "DiagnosticLogger | None",
+    live_metrics: LiveMetrics | None,
 ) -> None:
     for symbol, loop in runtime.loops.items():
         events = runtime.pending[symbol]
         runtime.pending[symbol] = []
         window_override = tbt_windows.get(symbol)
         if events:
-            runtime.last_state[symbol] = loop.step(
-                events, now_ms, window_override_ms=window_override
-            )
+            state = loop.step(events, now_ms, window_override_ms=window_override)
+            runtime.last_state[symbol] = state
+            if live_metrics is not None and state is not None:
+                live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
                 diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
             continue
@@ -356,9 +407,10 @@ def _update_state(
         if cutoff_ms is None:
             continue
         if now_ms - last_event_ms <= cutoff_ms:
-            runtime.last_state[symbol] = loop.step(
-                events, now_ms, window_override_ms=window_override
-            )
+            state = loop.step(events, now_ms, window_override_ms=window_override)
+            runtime.last_state[symbol] = state
+            if live_metrics is not None and state is not None:
+                live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
                 diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
 
@@ -454,8 +506,11 @@ class DiagnosticLogger:
             "E_rate": state.effort_rate,
             "disp_scale": state.disp_scale,
             "E_scale": state.effort_scale,
+            "disp_deadband_active": state.disp_deadband_active,
             "E_spot": state.e_spot,
             "E_perp": state.e_perp,
+            "E_dir": state.e_dir,
+            "E_dir_sign": _sign(state.e_dir),
             "E_total": state.total_effort,
             "D": state.dominance,
             "E_spot_share": state.e_spot_share,
@@ -511,6 +566,14 @@ def _map_to_base(item: AdapterEvent, symbol_maps: SymbolMaps) -> str | None:
     if item.event.source_id.startswith("binance_spot"):
         return symbol_maps.spot_actual_to_base.get(item.symbol)
     return symbol_maps.perp_actual_to_base.get(item.symbol)
+
+
+def _sign(value: float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
 
 
 def _build_tbt_settings(

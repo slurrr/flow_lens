@@ -16,6 +16,7 @@ EPSILON = 1e-9
 class StateSnapshot:
     e_spot: float
     e_perp: float
+    e_dir: float
     e_spot_share: float
     x_raw: float
     y_raw: float
@@ -44,6 +45,7 @@ class StateSnapshot:
     effort_rate: float
     disp_scale: float
     effort_scale: float
+    disp_deadband_active: bool
     spot_fresh: bool
     perp_fresh: bool
     price_series_used: str
@@ -77,20 +79,23 @@ class StateEngine:
         dispersion_sources: Mapping[str, float] | None = None,
     ) -> StateSnapshot:
         e_spot, e_perp, per_source = _aggregate_efforts(frame.efforts)
+        e_dir = frame.e_dir
         total_effort = e_spot + e_perp
         dominance = e_spot - e_perp
 
         window_seconds = max(frame.window_seconds, EPSILON)
         log_return = _log_return(frame.price_start, frame.price) if frame.price_start > 0 else 0.0
         disp_rate = log_return / (window_seconds + EPSILON)
-        disp_rate_dir = _sign(dominance) * disp_rate
         effort_rate = total_effort / (window_seconds + EPSILON)
         self._update_scales(frame.timestamp, abs(disp_rate), effort_rate)
 
         effort_median = self._median_recent(self._recent_effort)
         effort_floor = effort_median * self._defaults.effort_floor.multiplier_alpha
-        effort_scale = self._median_recent(self._recent_effort)
-        disp_scale = self._median_recent(self._recent_disp_rate)
+        effort_scale = self._effort_scale()
+        disp_scale = self._disp_scale()
+        disp_threshold = self._defaults.effectiveness_deadband.disp_scale_multiplier * disp_scale
+        disp_deadband_active = abs(disp_rate) <= disp_threshold
+        disp_rate_dir = 0.0 if disp_deadband_active else _sign(e_dir) * disp_rate
         effort_norm = effort_rate / (effort_scale + EPSILON)
         gate = self._effort_gate(effort_rate)
         x_raw = _clamp(self._dominance_ratio(dominance, total_effort), -1.0, 1.0)
@@ -134,6 +139,7 @@ class StateEngine:
         return StateSnapshot(
             e_spot=e_spot,
             e_perp=e_perp,
+            e_dir=e_dir,
             e_spot_share=e_spot / (total_effort + EPSILON),
             x_raw=x_raw,
             y_raw=y_raw,
@@ -162,6 +168,7 @@ class StateEngine:
             effort_rate=effort_rate,
             disp_scale=disp_scale,
             effort_scale=effort_scale,
+            disp_deadband_active=disp_deadband_active,
             spot_fresh=frame.spot_fresh,
             perp_fresh=frame.perp_fresh,
             price_series_used=frame.price_series_used,
@@ -221,6 +228,26 @@ class StateEngine:
         if not samples:
             return 0.0
         return median(samples)
+
+    def _disp_scale(self) -> float:
+        samples = [value for _, value in self._recent_disp_rate if value > 0.0]
+        if not samples:
+            return 0.0
+        min_samples = self._defaults.disp_scale.min_samples
+        if len(samples) < min_samples:
+            return median(samples)
+        samples.sort()
+        return _percentile(samples, self._defaults.disp_scale.percentile)
+
+    def _effort_scale(self) -> float:
+        samples = [value for _, value in self._recent_effort if value > 0.0]
+        if not samples:
+            return 0.0
+        min_samples = self._defaults.effort_scale.min_samples
+        if len(samples) < min_samples:
+            return median(samples)
+        samples.sort()
+        return _percentile(samples, self._defaults.effort_scale.percentile)
 
     def _force_magnitude(self, dominance: float, total_effort: float) -> float:
         dom = abs(dominance) / (total_effort + EPSILON)
@@ -285,6 +312,17 @@ def _log_return(price_start: float, price_end: float) -> float:
     from math import log
 
     return float(log(price_end / price_start))
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    if pct <= 0:
+        return values[0]
+    if pct >= 1:
+        return values[-1]
+    idx = int(round(pct * (len(values) - 1)))
+    return values[idx]
 
 
 def _aggregate_efforts(
