@@ -94,6 +94,50 @@ def _load_records(path: Path) -> list[dict]:
     return records
 
 
+def _load_config_summary(path: Path) -> dict[str, object]:
+    try:
+        data = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    runtime: dict[str, object] = {}
+    in_runtime = False
+    for raw_line in data.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_runtime = line == "[runtime]"
+            continue
+        if not in_runtime:
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        runtime[key.strip()] = value.strip()
+    ordered_keys = [
+        "update_window_seconds",
+        "tbt_window_multiplier",
+        "tanh_k",
+        "scale_window_seconds",
+        "disp_scale_multiplier",
+        "disp_scale_percentile",
+        "disp_scale_min_samples",
+        "effort_scale_percentile",
+        "effort_scale_min_samples",
+        "effort_floor_multiplier",
+        "effort_floor_ticks",
+        "smoothing_dominance_alpha",
+        "smoothing_effectiveness_alpha",
+        "dispersion_metric",
+        "halo_growth_rate",
+        "halo_decay_rate",
+        "binning_dot_size_thresholds",
+        "binning_halo_thresholds",
+        "binning_hysteresis_band",
+    ]
+    return {key: runtime[key] for key in ordered_keys if key in runtime}
+
+
 def _iter_symbols(records: Iterable[dict], symbols: set[str] | None) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for record in records:
@@ -539,6 +583,11 @@ def main() -> None:
         default="",
         help="Optional output file path. Defaults to docs/diagnostics with a unique name.",
     )
+    parser.add_argument(
+        "--config",
+        default="config/app.toml",
+        help="Optional config TOML path to include in header.",
+    )
     args = parser.parse_args()
 
     path = Path(args.path) if args.path else _latest_log_path()
@@ -550,6 +599,8 @@ def main() -> None:
     grouped = _iter_symbols(records, symbols if symbols else None)
 
     output_path = Path(args.out) if args.out else _output_path(symbols)
+    config_path = Path(args.config)
+    config_values = _load_config_summary(config_path) if config_path.exists() else {}
     majors = {"BTC", "ETH", "SOL"}
     major_k_values: list[float] = []
     major_symbols: list[str] = []
@@ -568,6 +619,10 @@ def main() -> None:
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(f"source_log: {path}\n")
         handle.write(f"generated_at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        if config_values:
+            handle.write("config:\n")
+            for key, value in config_values.items():
+                handle.write(f"  {key}: {value}\n")
         handle.write(f"eff_rel_active_multiplier: {EFF_REL_ACTIVE_MULTIPLIER:.2f}\n")
         if major_k_values:
             handle.write(

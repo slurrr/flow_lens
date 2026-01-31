@@ -115,18 +115,34 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         ),
     )
     logging.info(
-        "Runtime config: tanh_k=%.3f tbt_window_multiplier=%.3f "
-        "scale_window_seconds=%.3f disp_scale_multiplier=%.3f "
+        "Runtime config: update_window_seconds=%.3f tbt_window_multiplier=%.3f "
+        "tanh_k=%.3f scale_window_seconds=%.3f disp_scale_multiplier=%.3f "
         "disp_scale_percentile=%.3f disp_scale_min_samples=%d "
-        "effort_scale_percentile=%.3f effort_scale_min_samples=%d",
-        config.tanh_k,
+        "effort_scale_percentile=%.3f effort_scale_min_samples=%d "
+        "effort_floor_multiplier=%.3f effort_floor_ticks=%d "
+        "smoothing_dominance_alpha=%.3f smoothing_effectiveness_alpha=%.3f "
+        "dispersion_metric=%s halo_growth_rate=%.3f halo_decay_rate=%.3f "
+        "binning_dot_size_thresholds=%s binning_halo_thresholds=%s "
+        "binning_hysteresis_band=%.3f",
+        config.update_window_seconds,
         config.tbt_window_multiplier,
+        config.tanh_k,
         config.scale_window_seconds,
         config.disp_scale_multiplier,
         config.disp_scale_percentile,
         config.disp_scale_min_samples,
         config.effort_scale_percentile,
         config.effort_scale_min_samples,
+        config.effort_floor_multiplier,
+        config.effort_floor_ticks,
+        config.smoothing_dominance_alpha,
+        config.smoothing_effectiveness_alpha,
+        config.dispersion_metric,
+        config.halo_growth_rate,
+        config.halo_decay_rate,
+        config.binning_dot_size_thresholds,
+        config.binning_halo_thresholds,
+        config.binning_hysteresis_band,
     )
     base_symbols = _collect_symbols(config)
 
