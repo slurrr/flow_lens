@@ -70,16 +70,21 @@ binning_dot_size_thresholds = [0.35, 0.70]
 binning_halo_thresholds = [0.33, 0.66]
 binning_hysteresis_band = 0.05
 
-tanh_k = 0.10
+tanh_k = 0.16
 
-scale_window_seconds = 600.0
+scale_window_seconds = 420.0
 
-disp_scale_multiplier = 0.25    # deadband try .15 - .2
-disp_scale_percentile = 0.60
+persist_enabled = true
+persist_tau_build_s = 90.0
+persist_tau_decay_s = 20.0
+
+disp_scale_multiplier = 0.08    # deadband try .15 - .2
+disp_scale_percentile = 0.45
 disp_scale_min_samples = 20
+disp_scale_floor_percentile = 0.10
 
 effort_scale_percentile = 0.8
 effort_scale_min_samples = 20
 
-effort_floor_multiplier = 0.2    # 0.15
+effort_floor_multiplier = 0.30    # 0.15
 effort_floor_ticks = 60

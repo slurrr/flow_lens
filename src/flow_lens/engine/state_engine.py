@@ -23,6 +23,10 @@ class StateSnapshot:
     y_gated: float
     x: float
     y: float
+    persist_enabled: bool
+    persist_raw: float
+    persist_slope: float
+    persist_sign: int
     size_raw: float
     size_bin: int
     halo_raw: float
@@ -64,8 +68,11 @@ class StateEngine:
         self._defaults = defaults if defaults is not None else Defaults()
         self._recent_effort: Deque[tuple[int, float]] = deque()
         self._recent_disp_rate: Deque[tuple[int, float]] = deque()
+        self._disp_scale_cache: float | None = None
         self._x_smoothed: float | None = None
         self._y_smoothed: float | None = None
+        self._persist_state: float = 0.0
+        self._persist_last_ts_ms: int | None = None
         self._halo: float | None = None
         self._size_bin: int | None = None
         self._halo_bin: int | None = None
@@ -103,6 +110,12 @@ class StateEngine:
         eff_raw = self._effectiveness_ratio(disp_rate_dir, disp_scale, effort_rate, effort_scale)
         y_raw = self._apply_tanh(eff_raw)
         y_gated = gate * y_raw
+        persist_enabled = self._defaults.persistence.enabled
+        persist_raw, persist_slope, persist_sign = self._update_persistence(
+            frame.timestamp,
+            y_raw,
+            window_seconds,
+        )
 
         prev_x = self._x_smoothed
         prev_y = self._y_smoothed
@@ -146,6 +159,10 @@ class StateEngine:
             y_gated=y_gated,
             x=x,
             y=y,
+            persist_enabled=persist_enabled,
+            persist_raw=persist_raw,
+            persist_slope=persist_slope,
+            persist_sign=persist_sign,
             size_raw=size_raw,
             size_bin=size_bin,
             halo_raw=halo_raw,
@@ -232,12 +249,23 @@ class StateEngine:
     def _disp_scale(self) -> float:
         samples = [value for _, value in self._recent_disp_rate if value > 0.0]
         if not samples:
-            return 0.0
+            return self._disp_scale_cache or 0.0
         min_samples = self._defaults.disp_scale.min_samples
+        if len(samples) < min_samples and self._disp_scale_cache is not None:
+            return self._disp_scale_cache
         if len(samples) < min_samples:
-            return median(samples)
+            scale = median(samples)
+            if scale > 0.0:
+                self._disp_scale_cache = scale
+            return scale
         samples.sort()
-        return _percentile(samples, self._defaults.disp_scale.percentile)
+        scale = _percentile(samples, self._defaults.disp_scale.percentile)
+        floor = _percentile(samples, self._defaults.disp_scale.floor_percentile)
+        if floor > 0.0:
+            scale = max(scale, floor)
+        if scale > 0.0:
+            self._disp_scale_cache = scale
+        return scale
 
     def _effort_scale(self) -> float:
         samples = [value for _, value in self._recent_effort if value > 0.0]
@@ -259,6 +287,34 @@ class StateEngine:
             return halo_raw
         self._halo = update_halo(self._halo, halo_raw, self._defaults)
         return self._halo
+
+    def _update_persistence(
+        self,
+        now_ms: int,
+        acceptance: float,
+        fallback_dt_s: float,
+    ) -> tuple[float, float, int]:
+        if not self._defaults.persistence.enabled:
+            self._persist_state = 0.0
+            self._persist_last_ts_ms = now_ms
+            return 0.0, 0.0, 0
+
+        if self._persist_last_ts_ms is None:
+            dt_s = max(fallback_dt_s, EPSILON)
+        else:
+            dt_s = max((now_ms - self._persist_last_ts_ms) / 1000.0, EPSILON)
+        self._persist_last_ts_ms = now_ms
+
+        tau_build = max(self._defaults.persistence.tau_build_s, EPSILON)
+        tau_decay = max(self._defaults.persistence.tau_decay_s, EPSILON)
+        build = 1.0 - _exp(-dt_s / tau_build)
+        decay = 1.0 - _exp(-dt_s / tau_decay)
+
+        prev = self._persist_state
+        current = _clamp(prev * (1.0 - decay) + build * acceptance, -1.0, 1.0)
+        self._persist_state = current
+        slope = (current - prev) / dt_s
+        return current, slope, _sign(current)
 
     def _derive_lean(
         self,

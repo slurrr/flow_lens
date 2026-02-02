@@ -87,6 +87,8 @@ class Renderer:
             status_perp=status_perp,
         )
 
+        self._draw_persistence_line(stdscr, state, map_top, map_left, map_right, maxx, maxy)
+
         base_x, base_y = _norm_to_grid(state.x, state.y, self._config.width, self._config.height)
         base_x += map_left
         base_y += map_top
@@ -100,6 +102,7 @@ class Renderer:
             spot_stats=spot_stats,
             perp_stats=perp_stats,
             metrics=metrics,
+            state=state,
             symbol=symbol,
             map_left=map_left,
             map_right=map_right,
@@ -129,6 +132,7 @@ class Renderer:
         spot_stats: AdapterStats | None,
         perp_stats: AdapterStats | None,
         metrics: LiveMetricsSnapshot | None,
+        state: StateSnapshot | None,
         symbol: str,
         map_left: int,
         map_right: int,
@@ -138,6 +142,7 @@ class Renderer:
     ) -> None:
         lines = _status_lines(
             metrics,
+            state,
             symbol,
             perp_stats,
             spot_stats,
@@ -285,6 +290,29 @@ class Renderer:
                 continue
             stdscr.addstr(cy, cx, ".")
 
+    def _draw_persistence_line(
+        self,
+        stdscr: CursesWindow,
+        state: StateSnapshot,
+        map_top: int,
+        map_left: int,
+        map_right: int,
+        maxx: int,
+        maxy: int,
+    ) -> None:
+        if not state.persist_enabled:
+            return
+        _, grid_y = _norm_to_grid(0.0, state.persist_raw, self._config.width, self._config.height)
+        y = map_top + grid_y
+        center_y = map_top + self._config.height // 2
+        if y == center_y or not _in_bounds(map_left, y, maxx, maxy):
+            return
+        for x in range(map_left, map_right + 1):
+            if not _in_bounds(x, y, maxx, maxy):
+                continue
+            if (x - map_left) % 2 == 1:
+                stdscr.addstr(y, x, "·")
+
 def _norm_to_grid(xn: float, yn: float, width: int, height: int) -> tuple[int, int]:
     cx = width // 2
     cy = height // 2
@@ -339,6 +367,7 @@ def _tbt_text(stats: AdapterStats | None) -> str:
 
 def _status_lines(
     metrics: LiveMetricsSnapshot | None,
+    state: StateSnapshot | None,
     symbol: str,
     perp_stats: AdapterStats | None,
     spot_stats: AdapterStats | None,
@@ -362,6 +391,21 @@ def _status_lines(
         switch_rate = metrics.price_series_switch_rate
         air_pocket = metrics.air_pocket_active_rate
 
+    if state is None:
+        y_raw_now = None
+        y_smoothed = None
+        y_gated = None
+        persist_now = None
+        persist_slope = None
+        gate_now = None
+    else:
+        y_raw_now = state.y_raw
+        y_smoothed = state.y
+        y_gated = state.y_gated
+        persist_now = state.persist_raw
+        persist_slope = state.persist_slope
+        gate_now = state.gate
+
     line_metrics_1 = (
         "p95|Y_raw| "
         f"{_fmt_float(p95, 2)} [0.6-0.8]  "
@@ -374,7 +418,23 @@ def _status_lines(
         "Deadband "
         f"{_fmt_float(deadband, 2)} [0.25-0.55]"
     )
-    line_metrics_2 = (
+    y_line_indent = 0
+    line_metrics_y = (
+        " " * y_line_indent
+        + "Y_raw "
+        + _fmt_float(y_raw_now, 2)
+        + "  Y_g "
+        + _fmt_float(y_gated, 2)
+        + "  Y_s "
+        + _fmt_float(y_smoothed, 2)
+        + "  S "
+        + _fmt_float(persist_now, 2)
+        + "  dS/s "
+        + _fmt_float(persist_slope, 3)
+        + "  Gate "
+        + _fmt_float(gate_now, 2)
+    )
+    line_metrics_disp = (
         "|disp|/scale "
         f"{_fmt_float(disp_ratio, 2)} [0.8-2.0]  "
         "E_dir persist "
@@ -401,7 +461,7 @@ def _status_lines(
         f"{_reconnect_text(spot_stats)}"
     )
     line_feeds = f"{feeds_left}".ljust(col_width) + feeds_right
-    return [line_feeds, line_metrics_1, line_metrics_2]
+    return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp]
 
 
 def _fmt_float(value: float | None, digits: int) -> str:

@@ -31,6 +31,7 @@ from flow_lens.engine.constants import (
     EffortScaleConfig,
     HaloDynamics,
     InputNormalization,
+    Persistence,
     Smoothing,
     TimeDomain,
 )
@@ -93,12 +94,18 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         input_normalization=InputNormalization(
             scale_window_seconds=config.scale_window_seconds,
         ),
+        persistence=Persistence(
+            enabled=config.persist_enabled,
+            tau_build_s=config.persist_tau_build_s,
+            tau_decay_s=config.persist_tau_decay_s,
+        ),
         effectiveness_deadband=EffectivenessDeadband(
             disp_scale_multiplier=config.disp_scale_multiplier,
         ),
         disp_scale=DispScaleConfig(
             percentile=config.disp_scale_percentile,
             min_samples=config.disp_scale_min_samples,
+            floor_percentile=config.disp_scale_floor_percentile,
         ),
         effort_scale=EffortScaleConfig(
             percentile=config.effort_scale_percentile,
@@ -116,8 +123,10 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     )
     logging.info(
         "Runtime config: update_window_seconds=%.3f tbt_window_multiplier=%.3f "
-        "tanh_k=%.3f scale_window_seconds=%.3f disp_scale_multiplier=%.3f "
-        "disp_scale_percentile=%.3f disp_scale_min_samples=%d "
+        "tanh_k=%.3f scale_window_seconds=%.3f "
+        "persist_enabled=%s persist_tau_build_s=%.3f persist_tau_decay_s=%.3f "
+        "disp_scale_multiplier=%.3f "
+        "disp_scale_percentile=%.3f disp_scale_min_samples=%d disp_scale_floor_percentile=%.3f "
         "effort_scale_percentile=%.3f effort_scale_min_samples=%d "
         "effort_floor_multiplier=%.3f effort_floor_ticks=%d "
         "smoothing_dominance_alpha=%.3f smoothing_effectiveness_alpha=%.3f "
@@ -128,9 +137,13 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         config.tbt_window_multiplier,
         config.tanh_k,
         config.scale_window_seconds,
+        config.persist_enabled,
+        config.persist_tau_build_s,
+        config.persist_tau_decay_s,
         config.disp_scale_multiplier,
         config.disp_scale_percentile,
         config.disp_scale_min_samples,
+        config.disp_scale_floor_percentile,
         config.effort_scale_percentile,
         config.effort_scale_min_samples,
         config.effort_floor_multiplier,
@@ -173,6 +186,7 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
             path=Path("logs/flow_lens_diagnostics.jsonl"),
             symbols={"ASTER", "XPL", "SHIB", "BTC", "ETH", "SOL"},
             tanh_k=config.tanh_k,
+            config=_runtime_config_map(config),
         )
 
     last_update = time.monotonic()
@@ -468,17 +482,20 @@ class DiagnosticLogger:
         path: Path,
         symbols: set[str],
         tanh_k: float,
+        config: dict[str, object],
         max_lines: int = 20_000,
     ) -> None:
         self._base_path = path
         self._symbols = {symbol.upper() for symbol in symbols}
         self._tanh_k = tanh_k
+        self._config = config
         self._max_lines = max_lines
         self._line_count = 0
         self._part = 0
         self._run_id = time.strftime("%Y%m%d-%H%M%S")
         self._base_path.parent.mkdir(exist_ok=True)
         self._file = self._open_new_file()
+        self._write_config_meta(self._config)
 
     def _open_new_file(self) -> TextIO:
         suffix = f"-{self._run_id}-p{self._part:02d}.jsonl"
@@ -486,6 +503,11 @@ class DiagnosticLogger:
         self._part += 1
         self._line_count = 0
         return filename.open("w", encoding="utf-8")
+
+    def _write_config_meta(self, config: dict[str, object]) -> None:
+        meta = {"_meta": {"type": "config", "config": config}}
+        self._file.write(json.dumps(meta, separators=(",", ":")) + "\n")
+        self._file.flush()
 
     def log(
         self,
@@ -543,6 +565,9 @@ class DiagnosticLogger:
             "Y_raw": state.y_raw,
             "Y_gated": state.y_gated,
             "Y": state.y,
+            "persist_raw": state.persist_raw,
+            "persist_slope": state.persist_slope,
+            "persist_sign": state.persist_sign,
             "halo_raw": state.halo_raw,
             "halo": state.halo,
             "halo_bin": state.halo_bin,
@@ -557,6 +582,36 @@ class DiagnosticLogger:
         if self._line_count >= self._max_lines:
             self._file.close()
             self._file = self._open_new_file()
+            # Re-emit runtime config for every rotated file to keep reports self-contained.
+            self._write_config_meta(self._config)
+
+
+def _runtime_config_map(config: AppConfig) -> dict[str, object]:
+    return {
+        "update_window_seconds": config.update_window_seconds,
+        "tbt_window_multiplier": config.tbt_window_multiplier,
+        "tanh_k": config.tanh_k,
+        "scale_window_seconds": config.scale_window_seconds,
+        "persist_enabled": config.persist_enabled,
+        "persist_tau_build_s": config.persist_tau_build_s,
+        "persist_tau_decay_s": config.persist_tau_decay_s,
+        "disp_scale_multiplier": config.disp_scale_multiplier,
+        "disp_scale_percentile": config.disp_scale_percentile,
+        "disp_scale_min_samples": config.disp_scale_min_samples,
+        "disp_scale_floor_percentile": config.disp_scale_floor_percentile,
+        "effort_scale_percentile": config.effort_scale_percentile,
+        "effort_scale_min_samples": config.effort_scale_min_samples,
+        "effort_floor_multiplier": config.effort_floor_multiplier,
+        "effort_floor_ticks": config.effort_floor_ticks,
+        "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
+        "smoothing_effectiveness_alpha": config.smoothing_effectiveness_alpha,
+        "dispersion_metric": config.dispersion_metric,
+        "halo_growth_rate": config.halo_growth_rate,
+        "halo_decay_rate": config.halo_decay_rate,
+        "binning_dot_size_thresholds": config.binning_dot_size_thresholds,
+        "binning_halo_thresholds": config.binning_halo_thresholds,
+        "binning_hysteresis_band": config.binning_hysteresis_band,
+    }
 
 
 def _report_missing(

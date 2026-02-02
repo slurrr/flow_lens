@@ -29,9 +29,13 @@ class AppConfig:
     binning_hysteresis_band: float
     tanh_k: float
     scale_window_seconds: float
+    persist_enabled: bool
+    persist_tau_build_s: float
+    persist_tau_decay_s: float
     disp_scale_multiplier: float
     disp_scale_percentile: float
     disp_scale_min_samples: int
+    disp_scale_floor_percentile: float
     effort_scale_percentile: float
     effort_scale_min_samples: int
 
@@ -63,9 +67,13 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     binning_hysteresis_band = runtime_section.get("binning_hysteresis_band", 0.05)
     tanh_k = runtime_section.get("tanh_k", 500.0)
     scale_window_seconds = runtime_section.get("scale_window_seconds", 600.0)
+    persist_enabled = runtime_section.get("persist_enabled", True)
+    persist_tau_build_s = runtime_section.get("persist_tau_build_s", 90.0)
+    persist_tau_decay_s = runtime_section.get("persist_tau_decay_s", 20.0)
     disp_scale_multiplier = runtime_section.get("disp_scale_multiplier", 0.25)
     disp_scale_percentile = runtime_section.get("disp_scale_percentile", 0.75)
     disp_scale_min_samples = runtime_section.get("disp_scale_min_samples", 20)
+    disp_scale_floor_percentile = runtime_section.get("disp_scale_floor_percentile", 0.1)
     effort_scale_percentile = runtime_section.get("effort_scale_percentile", 0.5)
     effort_scale_min_samples = runtime_section.get("effort_scale_min_samples", 20)
     if not isinstance(tbt_window_multiplier, (int, float)):
@@ -92,14 +100,28 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.tanh_k must be a number.")
     if not isinstance(scale_window_seconds, (int, float)):
         raise ValueError("runtime.scale_window_seconds must be a number.")
+    if not isinstance(persist_enabled, bool):
+        raise ValueError("runtime.persist_enabled must be a boolean.")
+    if not isinstance(persist_tau_build_s, (int, float)):
+        raise ValueError("runtime.persist_tau_build_s must be a number.")
+    if not isinstance(persist_tau_decay_s, (int, float)):
+        raise ValueError("runtime.persist_tau_decay_s must be a number.")
+    if float(persist_tau_build_s) <= 0:
+        raise ValueError("runtime.persist_tau_build_s must be > 0.")
+    if float(persist_tau_decay_s) <= 0:
+        raise ValueError("runtime.persist_tau_decay_s must be > 0.")
     if not isinstance(disp_scale_multiplier, (int, float)):
         raise ValueError("runtime.disp_scale_multiplier must be a number.")
     if not isinstance(disp_scale_percentile, (int, float)):
         raise ValueError("runtime.disp_scale_percentile must be a number.")
     if not isinstance(disp_scale_min_samples, int):
         raise ValueError("runtime.disp_scale_min_samples must be an integer.")
+    if not isinstance(disp_scale_floor_percentile, (int, float)):
+        raise ValueError("runtime.disp_scale_floor_percentile must be a number.")
     if disp_scale_percentile <= 0 or disp_scale_percentile >= 1:
         raise ValueError("runtime.disp_scale_percentile must be between 0 and 1.")
+    if disp_scale_floor_percentile < 0 or disp_scale_floor_percentile >= 1:
+        raise ValueError("runtime.disp_scale_floor_percentile must be between 0 and 1.")
     if disp_scale_min_samples <= 0:
         raise ValueError("runtime.disp_scale_min_samples must be > 0.")
     if not isinstance(effort_scale_percentile, (int, float)):
@@ -154,9 +176,13 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         binning_hysteresis_band=float(binning_hysteresis_band),
         tanh_k=float(tanh_k),
         scale_window_seconds=float(scale_window_seconds),
+        persist_enabled=bool(persist_enabled),
+        persist_tau_build_s=float(persist_tau_build_s),
+        persist_tau_decay_s=float(persist_tau_decay_s),
         disp_scale_multiplier=float(disp_scale_multiplier),
         disp_scale_percentile=float(disp_scale_percentile),
         disp_scale_min_samples=int(disp_scale_min_samples),
+        disp_scale_floor_percentile=float(disp_scale_floor_percentile),
         effort_scale_percentile=float(effort_scale_percentile),
         effort_scale_min_samples=int(effort_scale_min_samples),
     )

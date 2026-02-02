@@ -1,0 +1,138 @@
+source_dir: logs/replay
+generated_at: 2026-01-31 21:04:51
+config:
+  update_window_seconds: 2.0
+  tbt_window_multiplier: 4.0
+  tanh_k: 0.12
+  scale_window_seconds: 420.0
+  disp_scale_multiplier: 0.08
+  disp_scale_percentile: 0.45
+  disp_scale_min_samples: 20
+  effort_scale_percentile: 0.8
+  effort_scale_min_samples: 20
+  effort_floor_multiplier: 0.15
+  effort_floor_ticks: 60
+  smoothing_dominance_alpha: 0.15
+  smoothing_effectiveness_alpha: 0.15
+  dispersion_metric: hill
+  halo_growth_rate: 0.1
+  halo_decay_rate: 0.5
+  binning_dot_size_thresholds: [0.35, 0.7]
+  binning_halo_thresholds: [0.33, 0.66]
+  binning_hysteresis_band: 0.05
+  config_source: replay_meta
+eff_rel_active_multiplier: 1.00
+
+== summary ==
+
+BTC chop (runs=1, records=358)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.507  p99|Y_raw| 0.744  Y_raw_sat 0.01  Flip Y_raw 12.52/m  Y 4.29/m  Deadband 0.19  Gate low 0.01  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 4.655  eff_rel_p95_active 7.801  k_reco_0.6 0.089  k_reco_0.7 0.111  k_reco_0.8 0.141
+|disp|/scale 0.62  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.40
+X mean -0.41
+
+BTC impulse (runs=1, records=386)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.598  p99|Y_raw| 0.992  Y_raw_sat 0.03  Flip Y_raw 6.12/m  Y 2.33/m  Deadband 0.60  Gate low 0.05  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 5.751  eff_rel_p95_active 20.488  k_reco_0.6 0.034  k_reco_0.7 0.042  k_reco_0.8 0.054
+|disp|/scale 0.00  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean 1.00
+X mean 1.00
+
+BTC trend_down (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.321  p99|Y_raw| 0.678  Y_raw_sat 0.00  Flip Y_raw 10.70/m  Y 3.10/m  Deadband 0.15  Gate low 0.00  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.773  eff_rel_p95_active 5.869  k_reco_0.6 0.118  k_reco_0.7 0.148  k_reco_0.8 0.187
+|disp|/scale 0.49  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.66
+X mean -0.66
+
+BTC trend_up (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.316  p99|Y_raw| 0.478  Y_raw_sat 0.00  Flip Y_raw 7.98/m  Y 2.95/m  Deadband 0.45  Gate low 0.00  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.726  eff_rel_p95_active 3.093  k_reco_0.6 0.224  k_reco_0.7 0.280  k_reco_0.8 0.355
+|disp|/scale 0.19  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.38
+X mean -0.38
+
+SHIB chop (runs=1, records=333)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.856  p99|Y_raw| 0.993  Y_raw_sat 0.05  Flip Y_raw 4.87/m  Y 2.77/m  Deadband 0.60  Gate low 0.03  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 10.653  eff_rel_p95_active 18.946  k_reco_0.6 0.037  k_reco_0.7 0.046  k_reco_0.8 0.058
+|disp|/scale 0.00  E_dir persist 3  Series switch 0.25/m  Air pocket 0.00  X_raw mean -0.44
+X mean -0.45
+
+SHIB impulse (runs=1, records=295)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.338  p99|Y_raw| 0.909  Y_raw_sat 0.01  Flip Y_raw 3.87/m  Y 1.51/m  Deadband 0.60  Gate low 0.03  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.931  eff_rel_p95_active 8.131  k_reco_0.6 0.085  k_reco_0.7 0.107  k_reco_0.8 0.135
+|disp|/scale 0.00  E_dir persist 3  Series switch 4.87/m  Air pocket 0.00  X_raw mean -0.58
+X mean -0.55
+
+SHIB trend_down (runs=1, records=356)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.385  p99|Y_raw| 0.729  Y_raw_sat 0.01  Flip Y_raw 3.70/m  Y 1.51/m  Deadband 0.60  Gate low 0.04  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 3.378  eff_rel_p95_active 6.254  k_reco_0.6 0.111  k_reco_0.7 0.139  k_reco_0.8 0.176
+|disp|/scale 0.00  E_dir persist 1  Series switch 11.01/m  Air pocket 0.00  X_raw mean -0.69
+X mean -0.71
+
+SHIB trend_up (runs=1, records=356)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.321  p99|Y_raw| 0.816  Y_raw_sat 0.00  Flip Y_raw 4.20/m  Y 1.51/m  Deadband 0.49  Gate low 0.03  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.770  eff_rel_p95_active 9.452  k_reco_0.6 0.073  k_reco_0.7 0.092  k_reco_0.8 0.116
+|disp|/scale 0.10  E_dir persist 1  Series switch 8.49/m  Air pocket 0.00  X_raw mean -0.64
+X mean -0.64
+
+SOL chop (runs=1, records=358)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.431  p99|Y_raw| 0.825  Y_raw_sat 0.01  Flip Y_raw 11.18/m  Y 2.94/m  Deadband 0.17  Gate low 0.01  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 3.839  eff_rel_p95_active 5.775  k_reco_0.6 0.120  k_reco_0.7 0.150  k_reco_0.8 0.190
+|disp|/scale 0.54  E_dir persist 1  Series switch 0.50/m  Air pocket 0.00  X_raw mean -0.47
+X mean -0.46
+
+SOL impulse (runs=1, records=387)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.149  p99|Y_raw| 0.392  Y_raw_sat 0.00  Flip Y_raw 2.48/m  Y 1.55/m  Deadband 0.79  Gate low 0.04  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 1.630  eff_rel_p95_active 2.882  k_reco_0.6 0.241  k_reco_0.7 0.301  k_reco_0.8 0.381
+|disp|/scale 0.00  E_dir persist 2  Series switch 9.61/m  Air pocket 0.00  X_raw mean -0.38
+X mean -0.38
+
+SOL trend_down (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.316  p99|Y_raw| 0.479  Y_raw_sat 0.00  Flip Y_raw 11.86/m  Y 4.03/m  Deadband 0.19  Gate low 0.00  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.723  eff_rel_p95_active 3.093  k_reco_0.6 0.224  k_reco_0.7 0.280  k_reco_0.8 0.355
+|disp|/scale 0.64  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.60
+X mean -0.60
+
+SOL trend_up (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.274  p99|Y_raw| 0.617  Y_raw_sat 0.00  Flip Y_raw 6.82/m  Y 2.33/m  Deadband 0.46  Gate low 0.01  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.344  eff_rel_p95_active 6.006  k_reco_0.6 0.115  k_reco_0.7 0.144  k_reco_0.8 0.183
+|disp|/scale 0.11  E_dir persist 1  Series switch 0.78/m  Air pocket 0.00  X_raw mean -0.34
+X mean -0.34
+
+XPL chop (runs=1, records=314)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.639  p99|Y_raw| 0.981  Y_raw_sat 0.03  Flip Y_raw 6.39/m  Y 3.03/m  Deadband 0.48  Gate low 0.11  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 6.300  eff_rel_p95_active 7.448  k_reco_0.6 0.093  k_reco_0.7 0.116  k_reco_0.8 0.148
+|disp|/scale 0.38  E_dir persist 3  Series switch 3.19/m  Air pocket 0.00  X_raw mean -0.66
+X mean -0.64
+
+XPL impulse (runs=1, records=286)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.469  p99|Y_raw| 1.000  Y_raw_sat 0.03  Flip Y_raw 3.19/m  Y 0.84/m  Deadband 0.61  Gate low 0.10  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 4.237  eff_rel_p95_active 0.919  k_reco_0.6 0.754  k_reco_0.7 0.944  k_reco_0.8 1.195
+|disp|/scale 0.00  E_dir persist 2  Series switch 5.97/m  Air pocket 0.00  X_raw mean -0.51
+X mean -0.52
+
+XPL trend_down (runs=1, records=343)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.756  p99|Y_raw| 1.000  Y_raw_sat 0.04  Flip Y_raw 3.53/m  Y 2.02/m  Deadband 0.66  Gate low 0.10  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 8.230  eff_rel_p95_active 10.185  k_reco_0.6 0.068  k_reco_0.7 0.085  k_reco_0.8 0.108
+|disp|/scale 0.00  E_dir persist 2  Series switch 9.92/m  Air pocket 0.00  X_raw mean -0.65
+X mean -0.66
+
+XPL trend_up (runs=1, records=248)
+scenario_duration n/a  pre_roll n/a
+p95|Y_raw| 0.463  p99|Y_raw| 1.000  Y_raw_sat 0.02  Flip Y_raw 3.70/m  Y 2.18/m  Deadband 0.44  Gate low 0.11  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 4.172  eff_rel_p95_active 1.072  k_reco_0.6 0.647  k_reco_0.7 0.809  k_reco_0.8 1.025
+|disp|/scale 0.51  E_dir persist 2  Series switch 1.51/m  Air pocket 0.00  X_raw mean -0.43
+X mean -0.41

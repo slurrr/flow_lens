@@ -1,0 +1,147 @@
+== replay window diagnostics ==
+
+BTC chop
+records: 358  with_events: 358
+events_zero_price: 29 (8.10%)
+events_zero_disp: 29 (8.10%)
+event_count_p50/p90/p99: 54/209/686
+disp_abs_p50/p90/p95/p99 (events): 0.000100866/0.000277754/0.000322657/0.000397572
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000112193/0.000282017/0.000328138/0.000398084
+price_series_fallback: 0 (0.00%)  counts={'spot': 358}
+
+BTC impulse
+records: 386  with_events: 386
+events_zero_price: 101 (26.17%)
+events_zero_disp: 101 (26.17%)
+event_count_p50/p90/p99: 9/84/280
+disp_abs_p50/p90/p95/p99 (events): 6.04545e-08/0.000744718/0.000813686/0.00143586
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000100972/0.000787063/0.000846312/0.00146263
+price_series_fallback: 0 (0.00%)  counts={'spot': 386}
+
+BTC trend_down
+records: 388  with_events: 388
+events_zero_price: 10 (2.58%)
+events_zero_disp: 10 (2.58%)
+event_count_p50/p90/p99: 194/770/1424
+disp_abs_p50/p90/p95/p99 (events): 4.65735e-05/0.000258148/0.000308721/0.000481615
+disp_abs_p50/p90/p95/p99 (nonzero): 4.9786e-05/0.000262998/0.000312085/0.000483864
+price_series_fallback: 0 (0.00%)  counts={'spot': 388}
+
+BTC trend_up
+records: 388  with_events: 388
+events_zero_price: 33 (8.51%)
+events_zero_disp: 33 (8.51%)
+event_count_p50/p90/p99: 53/1042/8199
+disp_abs_p50/p90/p95/p99 (events): 0.000114594/0.000678602/0.000760857/0.00115897
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000311207/0.000684767/0.000771567/0.00116247
+price_series_fallback: 0 (0.00%)  counts={'spot': 388}
+
+SHIB chop
+records: 333  with_events: 333
+events_zero_price: 201 (60.36%)
+events_zero_disp: 201 (60.36%)
+event_count_p50/p90/p99: 7/13/24
+disp_abs_p50/p90/p95/p99 (events): 0/0.000225605/0.000231133/0.000272427
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000214828/0.00023265/0.000233542/0.000288383
+price_series_fallback: 0 (0.00%)  counts={'perp': 2, 'spot': 331}
+
+SHIB impulse
+records: 295  with_events: 295
+events_zero_price: 178 (60.34%)
+events_zero_disp: 178 (60.34%)
+event_count_p50/p90/p99: 6/16/104
+disp_abs_p50/p90/p95/p99 (events): 0/0.000230954/0.000247125/0.000448504
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000200298/0.000397986/0.000432858/0.000739238
+price_series_fallback: 0 (0.00%)  counts={'spot': 232, 'perp': 63}
+
+SHIB trend_down
+records: 356  with_events: 356
+events_zero_price: 213 (59.83%)
+events_zero_disp: 213 (59.83%)
+event_count_p50/p90/p99: 8/79/223
+disp_abs_p50/p90/p95/p99 (events): 0/0.00062422/0.00126143/0.00193103
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000615385/0.00126582/0.00130107/0.00231231
+price_series_fallback: 0 (0.00%)  counts={'perp': 98, 'spot': 258}
+
+SHIB trend_up
+records: 356  with_events: 356
+events_zero_price: 175 (49.16%)
+events_zero_disp: 175 (49.16%)
+event_count_p50/p90/p99: 13/140/245
+disp_abs_p50/p90/p95/p99 (events): 6.16029e-05/0.00130805/0.00195632/0.00262997
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000632511/0.0019544/0.00199601/0.00333291
+price_series_fallback: 0 (0.00%)  counts={'perp': 75, 'spot': 281}
+
+SOL chop
+records: 358  with_events: 358
+events_zero_price: 54 (15.08%)
+events_zero_disp: 54 (15.08%)
+event_count_p50/p90/p99: 25/52/96
+disp_abs_p50/p90/p95/p99 (events): 0.000238124/0.00055545/0.00079993/0.000951768
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000356789/0.000594785/0.000832326/0.000952421
+price_series_fallback: 0 (0.00%)  counts={'spot': 355, 'perp': 3}
+
+SOL impulse
+records: 387  with_events: 387
+events_zero_price: 202 (52.20%)
+events_zero_disp: 202 (52.20%)
+event_count_p50/p90/p99: 6/11/38
+disp_abs_p50/p90/p95/p99 (events): 0/0.000629317/0.000667898/0.00071271
+disp_abs_p50/p90/p95/p99 (nonzero): 3.93407e-05/0.000667929/0.000668739/0.00125792
+price_series_fallback: 0 (0.00%)  counts={'spot': 307, 'perp': 80}
+
+SOL trend_down
+records: 388  with_events: 388
+events_zero_price: 34 (8.76%)
+events_zero_disp: 34 (8.76%)
+event_count_p50/p90/p99: 58/1140/1928
+disp_abs_p50/p90/p95/p99 (events): 0.000325945/0.000833279/0.00118671/0.00239182
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000364583/0.00085487/0.00120539/0.00243454
+price_series_fallback: 0 (0.00%)  counts={'spot': 388}
+
+SOL trend_up
+records: 388  with_events: 388
+events_zero_price: 93 (23.97%)
+events_zero_disp: 93 (23.97%)
+event_count_p50/p90/p99: 15/460/2266
+disp_abs_p50/p90/p95/p99 (events): 6.93626e-05/0.00075825/0.000965368/0.00136803
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000275577/0.000819374/0.00104622/0.0013824
+price_series_fallback: 0 (0.00%)  counts={'spot': 383, 'perp': 5}
+
+XPL chop
+records: 314  with_events: 314
+events_zero_price: 152 (48.41%)
+events_zero_disp: 152 (48.41%)
+event_count_p50/p90/p99: 6/15/47
+disp_abs_p50/p90/p95/p99 (events): 0.000106988/0.000280356/0.000361494/0.000726169
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000141124/0.000358614/0.000472348/0.000915819
+price_series_fallback: 0 (0.00%)  counts={'spot': 266, 'perp': 48}
+
+XPL impulse
+records: 286  with_events: 286
+events_zero_price: 174 (60.84%)
+events_zero_disp: 174 (60.84%)
+event_count_p50/p90/p99: 6/40/437
+disp_abs_p50/p90/p95/p99 (events): 0/0.000286784/0.000433563/0.00134069
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000162773/0.000479303/0.000812106/0.00170012
+price_series_fallback: 0 (0.00%)  counts={'perp': 74, 'spot': 212}
+
+XPL trend_down
+records: 343  with_events: 343
+events_zero_price: 227 (66.18%)
+events_zero_disp: 227 (66.18%)
+event_count_p50/p90/p99: 6/27/242
+disp_abs_p50/p90/p95/p99 (events): 0/0.000382059/0.000763651/0.00275913
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000380228/0.000941522/0.00241348/0.00344713
+price_series_fallback: 0 (0.00%)  counts={'spot': 255, 'perp': 88}
+
+XPL trend_up
+records: 248  with_events: 248
+events_zero_price: 110 (44.35%)
+events_zero_disp: 110 (44.35%)
+event_count_p50/p90/p99: 8/37/188
+disp_abs_p50/p90/p95/p99 (events): 9.0524e-05/0.000281884/0.000446472/0.000962531
+disp_abs_p50/p90/p95/p99 (nonzero): 0.000136247/0.000424339/0.000589519/0.00129156
+price_series_fallback: 0 (0.00%)  counts={'spot': 234, 'perp': 14}
+
+Note: unique price counts per window are not available from replay snapshots. To measure unique prices per window, compute directly from raw trades.

@@ -1,0 +1,82 @@
+source_dir: logs/replay
+generated_at: 2026-02-01 11:39:39
+config:
+  update_window_seconds: 2.0
+  tbt_window_multiplier: 4.0
+  tanh_k: 0.16
+  scale_window_seconds: 420.0
+  disp_scale_multiplier: 0.08
+  disp_scale_percentile: 0.45
+  disp_scale_min_samples: 20
+  effort_scale_percentile: 0.8
+  effort_scale_min_samples: 20
+  effort_floor_multiplier: 0.3
+  effort_floor_ticks: 60
+  smoothing_dominance_alpha: 0.15
+  smoothing_effectiveness_alpha: 0.15
+  dispersion_metric: hill
+  halo_growth_rate: 0.1
+  halo_decay_rate: 0.5
+  binning_dot_size_thresholds: [0.35, 0.7]
+  binning_halo_thresholds: [0.33, 0.66]
+  binning_hysteresis_band: 0.05
+  config_source: replay_meta
+eff_rel_active_multiplier: 1.00
+
+== summary ==
+
+BTC chop (runs=1, records=358)
+scenario_duration 118s  pre_roll 600s
+p95|Y_raw| 0.632  p99|Y_raw| 0.857  Y_raw_sat 0.01  Flip Y_raw 12.52/m  Y 4.62/m  Deadband 0.20  Gate low 0.01  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 4.655  eff_rel_p95_active 7.801  k_reco_0.6 0.089  k_reco_0.7 0.111  k_reco_0.8 0.141
+|disp|/scale 0.62  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.40
+X mean -0.41
+
+BTC impulse (runs=1, records=386)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.684  p99|Y_raw| 0.998  Y_raw_sat 0.03  Flip Y_raw 6.12/m  Y 2.48/m  Deadband 0.61  Gate low 0.05  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 5.232  eff_rel_p95_active 8.155  k_reco_0.6 0.085  k_reco_0.7 0.106  k_reco_0.8 0.135
+|disp|/scale 0.00  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean 1.00
+X mean 1.00
+
+BTC trend_down (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.399  p99|Y_raw| 0.766  Y_raw_sat 0.00  Flip Y_raw 10.70/m  Y 3.10/m  Deadband 0.15  Gate low 0.00  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.639  eff_rel_p95_active 5.869  k_reco_0.6 0.118  k_reco_0.7 0.148  k_reco_0.8 0.187
+|disp|/scale 0.48  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.66
+X mean -0.66
+
+BTC trend_up (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.406  p99|Y_raw| 0.601  Y_raw_sat 0.00  Flip Y_raw 7.98/m  Y 2.79/m  Deadband 0.45  Gate low 0.00  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.694  eff_rel_p95_active 3.093  k_reco_0.6 0.224  k_reco_0.7 0.280  k_reco_0.8 0.355
+|disp|/scale 0.19  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.38
+X mean -0.38
+
+SOL chop (runs=1, records=358)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.547  p99|Y_raw| 0.916  Y_raw_sat 0.01  Flip Y_raw 11.18/m  Y 2.94/m  Deadband 0.17  Gate low 0.01  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 3.839  eff_rel_p95_active 5.775  k_reco_0.6 0.120  k_reco_0.7 0.150  k_reco_0.8 0.190
+|disp|/scale 0.54  E_dir persist 1  Series switch 0.50/m  Air pocket 0.00  X_raw mean -0.47
+X mean -0.46
+
+SOL impulse (runs=1, records=387)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.197  p99|Y_raw| 0.503  Y_raw_sat 0.00  Flip Y_raw 2.48/m  Y 1.55/m  Deadband 0.79  Gate low 0.04  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 1.630  eff_rel_p95_active 3.454  k_reco_0.6 0.201  k_reco_0.7 0.251  k_reco_0.8 0.318
+|disp|/scale 0.00  E_dir persist 2  Series switch 9.61/m  Air pocket 0.00  X_raw mean -0.38
+X mean -0.38
+
+SOL trend_down (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.410  p99|Y_raw| 0.601  Y_raw_sat 0.00  Flip Y_raw 11.71/m  Y 4.50/m  Deadband 0.19  Gate low 0.00  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.723  eff_rel_p95_active 3.202  k_reco_0.6 0.217  k_reco_0.7 0.271  k_reco_0.8 0.343
+|disp|/scale 0.63  E_dir persist 2  Series switch 0.00/m  Air pocket 0.00  X_raw mean -0.60
+X mean -0.60
+
+SOL trend_up (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.310  p99|Y_raw| 0.731  Y_raw_sat 0.01  Flip Y_raw 6.82/m  Y 2.33/m  Deadband 0.46  Gate low 0.01  Y_raw_dir_mismatch 0.00
+eff_rel_p95_all 2.000  eff_rel_p95_active 5.565  k_reco_0.6 0.125  k_reco_0.7 0.156  k_reco_0.8 0.197
+|disp|/scale 0.11  E_dir persist 1  Series switch 0.78/m  Air pocket 0.00  X_raw mean -0.34
+X mean -0.34

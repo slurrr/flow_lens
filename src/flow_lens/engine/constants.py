@@ -34,6 +34,13 @@ class InputNormalization:
 
 
 @dataclass(frozen=True)
+class Persistence:
+    enabled: bool = True
+    tau_build_s: float = 90.0
+    tau_decay_s: float = 20.0
+
+
+@dataclass(frozen=True)
 class EffectivenessDeadband:
     disp_scale_multiplier: float = 0.25
 
@@ -42,6 +49,7 @@ class EffectivenessDeadband:
 class DispScaleConfig:
     percentile: float = 0.75
     min_samples: int = 20
+    floor_percentile: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -71,6 +79,7 @@ class Defaults:
     smoothing: Smoothing = Smoothing()
     effectiveness_scaling: EffectivenessScaling = EffectivenessScaling()
     input_normalization: InputNormalization = InputNormalization()
+    persistence: Persistence = Persistence()
     effectiveness_deadband: EffectivenessDeadband = EffectivenessDeadband()
     disp_scale: DispScaleConfig = DispScaleConfig()
     effort_scale: EffortScaleConfig = EffortScaleConfig()

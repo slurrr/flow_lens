@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, TextIO, cast
+from typing import Iterable, Iterator, TextIO, cast
 
 from flow_lens.config import AppConfig, load_app_config
 from flow_lens.engine.buffer import RollingEventBuffer
@@ -35,6 +35,42 @@ class ChunkFile:
     market: str
     start_ms: int
     end_ms: int
+
+
+@dataclass(frozen=True)
+class ReplayEvent:
+    event: Event
+    actual_symbol: str
+    side_type: SideType
+
+
+class TbtTracker:
+    def __init__(self) -> None:
+        self._last_ms: dict[str, int] = {}
+        self._mean_ms: dict[str, float] = {}
+        self._count: dict[str, int] = {}
+
+    def update(self, symbol: str, timestamp_ms: int) -> None:
+        last_ms = self._last_ms.get(symbol)
+        if last_ms is not None:
+            delta = timestamp_ms - last_ms
+            if delta > 0:
+                count = self._count.get(symbol, 0)
+                mean = self._mean_ms.get(symbol, 0.0)
+                new_mean = (mean * count + delta) / (count + 1)
+                self._mean_ms[symbol] = new_mean
+                self._count[symbol] = count + 1
+        self._last_ms[symbol] = timestamp_ms
+
+    def min_mean(self, symbols: Iterable[str]) -> float | None:
+        minimum: float | None = None
+        for symbol in symbols:
+            mean = self._mean_ms.get(symbol)
+            if mean is None:
+                continue
+            if minimum is None or mean < minimum:
+                minimum = mean
+        return minimum
 
 
 def _parse_time(value: str) -> int:
@@ -121,7 +157,7 @@ def _iter_chunk_events(
     *,
     start_ms: int,
     end_ms: int,
-) -> Iterator[Event]:
+) -> Iterator[ReplayEvent]:
     opener = gzip.open if chunk.path.suffix == ".gz" else open
     with opener(chunk.path, "rt", encoding="utf-8") as handle:
         for line in handle:
@@ -133,29 +169,33 @@ def _iter_chunk_events(
                 continue
             if ts >= end_ms:
                 break
-            yield Event(
+            side_type = _coerce_side_type(
+                str(record.get("side_type", chunk.market)),
+                chunk.market,
+            )
+            aggressor_side = _coerce_aggressor_side(
+                str(record.get("aggressor_side", "buy"))
+            )
+            event = Event(
                 timestamp=ts,
                 source_id=str(record.get("source_id", "")),
-                side_type=_coerce_side_type(
-                    str(record.get("side_type", chunk.market)),
-                    chunk.market,
-                ),
-                aggressor_side=_coerce_aggressor_side(
-                    str(record.get("aggressor_side", "buy"))
-                ),
+                side_type=side_type,
+                aggressor_side=aggressor_side,
                 effort_value=float(record.get("effort_value", 0.0)),
                 price=float(record.get("price", 0.0)),
             )
+            actual_symbol = str(record.get("symbol", chunk.symbol))
+            yield ReplayEvent(event=event, actual_symbol=actual_symbol, side_type=side_type)
 
 
-def _merge_event_iters(iters: list[Iterator[Event]]) -> Iterator[Event]:
-    heap: list[tuple[int, int, Event, Iterator[Event]]] = []
+def _merge_event_iters(iters: list[Iterator[ReplayEvent]]) -> Iterator[ReplayEvent]:
+    heap: list[tuple[int, int, ReplayEvent, Iterator[ReplayEvent]]] = []
     for idx, iterator in enumerate(iters):
         try:
             event = next(iterator)
         except StopIteration:
             continue
-        heapq.heappush(heap, (event.timestamp, idx, event, iterator))
+        heapq.heappush(heap, (event.event.timestamp, idx, event, iterator))
     while heap:
         _, idx, event, iterator = heapq.heappop(heap)
         yield event
@@ -163,7 +203,7 @@ def _merge_event_iters(iters: list[Iterator[Event]]) -> Iterator[Event]:
             nxt = next(iterator)
         except StopIteration:
             continue
-        heapq.heappush(heap, (nxt.timestamp, idx, nxt, iterator))
+        heapq.heappush(heap, (nxt.event.timestamp, idx, nxt, iterator))
 
 
 def _build_defaults(config: AppConfig) -> Defaults:
@@ -187,6 +227,46 @@ def _open_output(path: Path) -> TextIO:
     if path.suffix == ".gz":
         return gzip.open(path, "wt", encoding="utf-8")
     return path.open("w", encoding="utf-8")
+
+
+def _config_snapshot(config: AppConfig) -> dict[str, object]:
+    return {
+        "update_window_seconds": config.update_window_seconds,
+        "tbt_window_multiplier": config.tbt_window_multiplier,
+        "tanh_k": config.tanh_k,
+        "scale_window_seconds": config.scale_window_seconds,
+        "disp_scale_multiplier": config.disp_scale_multiplier,
+        "disp_scale_percentile": config.disp_scale_percentile,
+        "disp_scale_min_samples": config.disp_scale_min_samples,
+        "effort_scale_percentile": config.effort_scale_percentile,
+        "effort_scale_min_samples": config.effort_scale_min_samples,
+        "effort_floor_multiplier": config.effort_floor_multiplier,
+        "effort_floor_ticks": config.effort_floor_ticks,
+        "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
+        "smoothing_effectiveness_alpha": config.smoothing_effectiveness_alpha,
+        "dispersion_metric": config.dispersion_metric,
+        "halo_growth_rate": config.halo_growth_rate,
+        "halo_decay_rate": config.halo_decay_rate,
+        "binning_dot_size_thresholds": config.binning_dot_size_thresholds,
+        "binning_halo_thresholds": config.binning_halo_thresholds,
+        "binning_hysteresis_band": config.binning_hysteresis_band,
+    }
+
+
+def _write_meta(
+    handle: TextIO,
+    *,
+    config: AppConfig,
+    replay: dict[str, object],
+) -> None:
+    payload = {
+        "_meta": {
+            "type": "config",
+            "config": _config_snapshot(config),
+            "replay": replay,
+        }
+    }
+    handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
 def _log_record(
@@ -335,14 +415,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--window-ms",
         type=int,
-        default=2000,
-        help="Rolling window size in ms (default 2000).",
+        default=None,
+        help="Fallback rolling window size in ms (defaults to config update_window_seconds).",
     )
     parser.add_argument(
         "--update-ms",
         type=int,
-        default=2000,
-        help="Update interval in ms (default 2000).",
+        default=None,
+        help="Update interval in ms (defaults to config update_window_seconds).",
     )
     parser.add_argument(
         "--config",
@@ -394,7 +474,8 @@ def main() -> None:
 
     start_override = _parse_time(args.start) if args.start else None
     end_override = _parse_time(args.end) if args.end else None
-    update_ms = max(1, args.update_ms)
+    update_ms = max(1, args.update_ms or int(config.update_window_seconds * 1000))
+    fallback_window_ms = max(1, args.window_ms or int(config.update_window_seconds * 1000))
 
     if scenario_payload:
         symbol_value = str(scenario_payload.get("symbol", "")).upper()
@@ -436,19 +517,20 @@ def main() -> None:
         if not selected:
             continue
 
+        spot_actuals = sorted({chunk.symbol for chunk in selected if chunk.market == "spot"})
+        perp_actuals = sorted({chunk.symbol for chunk in selected if chunk.market == "perp"})
+
         start_ms, end_ms = _resolve_time_bounds(
             selected, start_override=start_override, end_override=end_override
         )
 
-        iters = [
-            _iter_chunk_events(chunk, start_ms=start_ms, end_ms=end_ms)
-            for chunk in selected
-        ]
+        iters = [_iter_chunk_events(chunk, start_ms=start_ms, end_ms=end_ms) for chunk in selected]
         merged = _merge_event_iters(iters)
 
-        buffer = RollingEventBuffer(window_delta_ms=args.window_ms)
+        buffer = RollingEventBuffer(window_delta_ms=fallback_window_ms)
         engine = StateEngine(defaults)
         loop = EngineLoop(symbol=base_symbol, buffer=buffer, engine=engine)
+        tbt_trackers = {"spot": TbtTracker(), "perp": TbtTracker()}
 
         timestamp_tag = time.strftime("%Y%m%d-%H%M%S")
         label_suffix = ""
@@ -470,27 +552,79 @@ def main() -> None:
             continue
 
         with _open_output(out_path) as handle:
+            replay_meta: dict[str, object] = {
+                "symbol": base_symbol,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "fallback_window_ms": fallback_window_ms,
+                "update_ms": update_ms,
+                "scenario_id": scenario_payload.get("id") if scenario_payload else None,
+                "label": scenario_payload.get("label") if scenario_payload else None,
+            }
+            if scenario_payload:
+                replay_meta.update(
+                    {
+                        "scenario_start_ms": scenario_payload.get("start_ms"),
+                        "scenario_end_ms": scenario_payload.get("end_ms"),
+                        "pre_roll_ms": scenario_payload.get("pre_roll_ms"),
+                    }
+                )
+            _write_meta(
+                handle,
+                config=config,
+                replay=replay_meta,
+            )
             while now_ms < end_ms:
-                events: list[Event] = []
-                while next_event is not None and next_event.timestamp <= now_ms:
-                    events.append(next_event)
-                    last_event_ms = next_event.timestamp
+                replay_events: list[ReplayEvent] = []
+                while next_event is not None and next_event.event.timestamp <= now_ms:
+                    replay_events.append(next_event)
+                    last_event_ms = next_event.event.timestamp
+                    tracker = tbt_trackers.get(next_event.side_type)
+                    if tracker is not None:
+                        tracker.update(next_event.actual_symbol, next_event.event.timestamp)
                     try:
                         next_event = next(merged)
                     except StopIteration:
                         next_event = None
                         break
-                if last_event_ms is not None:
-                    state = loop.step(events, now_ms, window_override_ms=args.window_ms)
-                    if state is not None:
-                        _log_record(
-                            handle,
-                            symbol=base_symbol,
-                            state=state,
-                            now_ms=now_ms,
-                            buffer=buffer,
-                            tanh_k=defaults.effectiveness_scaling.tanh_k,
-                        )
+
+                spot_min = tbt_trackers["spot"].min_mean(spot_actuals) if spot_actuals else None
+                perp_min = tbt_trackers["perp"].min_mean(perp_actuals) if perp_actuals else None
+                if spot_min is None:
+                    tbt_min = perp_min
+                elif perp_min is None:
+                    tbt_min = spot_min
+                else:
+                    tbt_min = min(spot_min, perp_min)
+
+                if tbt_min is None:
+                    cutoff_ms = fallback_window_ms
+                    window_override_ms = fallback_window_ms
+                else:
+                    cutoff_ms = max(1, int(tbt_min))
+                    window_override_ms = max(
+                        fallback_window_ms,
+                        int(tbt_min * config.tbt_window_multiplier),
+                    )
+
+                if replay_events:
+                    events = [item.event for item in replay_events]
+                    state = loop.step(events, now_ms, window_override_ms=window_override_ms)
+                else:
+                    if last_event_ms is None or now_ms - last_event_ms > cutoff_ms:
+                        state = None
+                    else:
+                        state = loop.step((), now_ms, window_override_ms=window_override_ms)
+
+                if state is not None:
+                    _log_record(
+                        handle,
+                        symbol=base_symbol,
+                        state=state,
+                        now_ms=now_ms,
+                        buffer=buffer,
+                        tanh_k=defaults.effectiveness_scaling.tanh_k,
+                    )
                 now_ms += update_ms
 
         print(f"Wrote replay diagnostics: {out_path}")
