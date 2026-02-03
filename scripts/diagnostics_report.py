@@ -191,14 +191,32 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "scale_window_seconds",
         "persist_enabled",
         "persist_input",
-        "persist_gain_per_second",
         "persist_input_deadband",
+        "persist_neutral_dir_abs_flash",
+        "persist_neutral_dir_abs_persist",
+        "persist_tau_eff_active",
+        "persist_tau_dir_active",
+        "persist_pivot_active_abs",
+        "persist_pivot_confirm_s",
+        "persist_pivot_neutralize_tau",
+        "persist_pivot_neutral_zone_abs",
+        "persist_rebuild_confirm_s",
+        "persist_pivot_cooldown_s",
+        "persist_pivot_max_s",
+        "persist_max_delta_s_eff_per_second",
+        "persist_tau_dir_pivot",
+        "persist_dormant_quiet_abs",
+        "persist_dormant_active_abs",
+        "persist_dormant_quiet_s",
+        "persist_tau_dormant",
+        "persist_dormant_effort_norm_threshold",
         "disp_scale_multiplier",
         "disp_scale_percentile",
         "disp_scale_min_samples",
         "disp_scale_floor_percentile",
         "effort_scale_percentile",
         "effort_scale_min_samples",
+        "size_scale_percentile",
         "spot_price_stale_switch_ticks",
         "effort_floor_multiplier",
         "effort_floor_ticks",
@@ -357,9 +375,11 @@ def _write_summary(
                 _as_float(stats.get("y_raw_disp_dir_mismatch_rate"))
             )
             mode_fracs = _as_float_map(stats.get("persist_update_mode_fractions"))
-            aggregated[key]["persist_mode_build_frac"].append(_as_float(mode_fracs.get("build")))
-            aggregated[key]["persist_mode_oppose_frac"].append(_as_float(mode_fracs.get("oppose")))
-            aggregated[key]["persist_mode_hold_frac"].append(_as_float(mode_fracs.get("hold")))
+            aggregated[key]["persist_mode_active_frac"].append(_as_float(mode_fracs.get("active")))
+            aggregated[key]["persist_mode_pivot_frac"].append(_as_float(mode_fracs.get("pivot")))
+            aggregated[key]["persist_mode_dormant_frac"].append(
+                _as_float(mode_fracs.get("dormant"))
+            )
             aggregated[key]["persist_activity_rate"].append(
                 _as_float(stats.get("persist_activity_rate"))
             )
@@ -463,10 +483,10 @@ def _write_summary(
                 f"{_median(aggregated[key]['persist_abs_p99']):.3f}  "
                 "max|S| "
                 f"{_median(aggregated[key]['persist_abs_max']):.3f}  "
-                "Mode b/o/h "
-                f"{_median(aggregated[key]['persist_mode_build_frac']):.2f}/"
-                f"{_median(aggregated[key]['persist_mode_oppose_frac']):.2f}/"
-                f"{_median(aggregated[key]['persist_mode_hold_frac']):.2f}  "
+                "Mode a/p/d "
+                f"{_median(aggregated[key]['persist_mode_active_frac']):.2f}/"
+                f"{_median(aggregated[key]['persist_mode_pivot_frac']):.2f}/"
+                f"{_median(aggregated[key]['persist_mode_dormant_frac']):.2f}  "
                 "Act "
                 f"{_median(aggregated[key]['persist_activity_rate']):.2f}  "
                 "dt_p50/p90 "
@@ -551,6 +571,8 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     x_raw_stats = SeriesStats([])
     x_stats = SeriesStats([])
     size_raw_stats = SeriesStats([])
+    size_effort_norm_stats = SeriesStats([])
+    size_scale_stats = SeriesStats([])
     e_total_stats = SeriesStats([])
     e_rate_stats = SeriesStats([])
     e_spot_share_stats = SeriesStats([])
@@ -761,6 +783,8 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         x_raw_stats.add(float(record.get("X_raw", 0.0)))
         x_stats.add(float(record.get("X", 0.0)))
         size_raw_stats.add(float(record.get("size_raw", 0.0)))
+        size_effort_norm_stats.add(float(record.get("size_effort_norm", 0.0)))
+        size_scale_stats.add(float(record.get("size_scale", 0.0)))
         size_bins[int(record.get("size_bin", 0))] += 1
         e_total_stats.add(float(record.get("E_total", 0.0)))
         e_rate_stats.add(float(record.get("E_rate", 0.0)))
@@ -1114,6 +1138,10 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     out["X_raw"] = _format_summary("X_raw", x_raw_stats.summary())
     out["X"] = _format_summary("X", x_stats.summary())
     out["size_raw"] = _format_summary("size_raw", size_raw_stats.summary())
+    out["size_effort_norm"] = _format_summary(
+        "size_effort_norm", size_effort_norm_stats.summary()
+    )
+    out["size_scale"] = _format_summary("size_scale", size_scale_stats.summary())
     out["E_total"] = _format_summary("E_total", e_total_stats.summary())
     out["E_rate"] = _format_summary("E_rate", e_rate_stats.summary())
     out["E_spot_share"] = _format_summary("E_spot_share", e_spot_share_stats.summary())
@@ -1426,6 +1454,8 @@ def main() -> None:
                 "X_raw",
                 "X",
                 "size_raw",
+                "size_effort_norm",
+                "size_scale",
                 "E_total",
                 "E_rate",
                 "E_dir",

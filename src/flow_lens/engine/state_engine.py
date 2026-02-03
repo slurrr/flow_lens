@@ -26,15 +26,31 @@ class StateSnapshot:
     persist_enabled: bool
     persist_input: str
     persist_input_value: float
+    persist_a_eff: float
+    persist_a_dir: float
     persist_raw: float
+    persist_dir_raw: float
     persist_slope: float
     persist_sign: int
+    persist_dir_sign: int
     persist_dt_s: float
     persist_gain_per_second: float
     persist_input_deadband: float
     persist_step_coeff: float
+    persist_alpha_eff: float
+    persist_alpha_dir: float
+    persist_tau_eff_s: float
+    persist_tau_dir_s: float
     persist_update_mode: str
     persist_activity_flag: bool
+    persist_pivot_confirm_elapsed_s: float
+    persist_pivot_cooldown_remaining_s: float
+    persist_last_confirmed_dir_sign: int
+    persist_pivot_target_dir_sign: int
+    persist_neutral_dir_abs_flash: float
+    persist_neutral_dir_abs_persist: float
+    size_effort_norm: float
+    size_scale: float
     size_raw: float
     size_bin: int
     halo_raw: float
@@ -71,6 +87,29 @@ class StateSnapshot:
     top_source_effort: float
 
 
+@dataclass(frozen=True)
+class _PersistenceUpdate:
+    a_eff: float
+    a_dir: float
+    s_eff: float
+    s_dir: float
+    slope_eff: float
+    dt_s: float
+    input_deadband: float
+    alpha_eff: float
+    alpha_dir: float
+    tau_eff_s: float
+    tau_dir_s: float
+    mode: str
+    activity_flag: bool
+    pivot_confirm_elapsed_s: float
+    pivot_cooldown_remaining_s: float
+    last_confirmed_dir_sign: int
+    pivot_target_dir_sign: int
+    neutral_dir_abs_flash: float
+    neutral_dir_abs_persist: float
+
+
 class StateEngine:
     def __init__(self, defaults: Defaults | None = None) -> None:
         self._defaults = defaults if defaults is not None else Defaults()
@@ -79,8 +118,17 @@ class StateEngine:
         self._disp_scale_cache: float | None = None
         self._x_smoothed: float | None = None
         self._y_smoothed: float | None = None
-        self._persist_state: float = 0.0
+        self._persist_eff_state: float = 0.0
+        self._persist_dir_state: float = 0.0
         self._persist_last_ts_ms: int | None = None
+        self._persist_quiet_elapsed_s: float = 0.0
+        self._persist_pivot_active: bool = False
+        self._persist_pivot_elapsed_s: float = 0.0
+        self._persist_pivot_rebuild_elapsed_s: float = 0.0
+        self._persist_pivot_confirm_elapsed_s: float = 0.0
+        self._persist_pivot_cooldown_remaining_s: float = 0.0
+        self._persist_last_confirmed_dir_sign: int = 0
+        self._persist_pivot_target_dir_sign: int = 0
         self._halo: float | None = None
         self._size_bin: int | None = None
         self._halo_bin: int | None = None
@@ -131,23 +179,18 @@ class StateEngine:
             y_gated=y_gated,
             y=y,
         )
-        (
-            persist_raw,
-            persist_slope,
-            persist_sign,
-            persist_dt_s,
-            persist_gain_per_second,
-            persist_input_deadband,
-            persist_step_coeff,
-            persist_update_mode,
-            persist_activity_flag,
-        ) = self._update_persistence(
+        persistence = self._update_persistence(
             frame.timestamp,
             persist_input_value,
+            e_dir,
+            total_effort,
+            effort_norm,
             window_seconds,
         )
 
-        size_raw = _clamp(self._force_magnitude(dominance, total_effort), 0.0, 1.0)
+        size_scale = self._size_scale()
+        size_effort_norm = effort_rate / (size_scale + EPSILON)
+        size_raw = _clamp(size_effort_norm / (1.0 + size_effort_norm), 0.0, 1.0)
         size_bin = _bin_with_hysteresis(
             size_raw,
             self._size_bin,
@@ -185,15 +228,31 @@ class StateEngine:
             persist_enabled=persist_enabled,
             persist_input=persist_input,
             persist_input_value=persist_input_value,
-            persist_raw=persist_raw,
-            persist_slope=persist_slope,
-            persist_sign=persist_sign,
-            persist_dt_s=persist_dt_s,
-            persist_gain_per_second=persist_gain_per_second,
-            persist_input_deadband=persist_input_deadband,
-            persist_step_coeff=persist_step_coeff,
-            persist_update_mode=persist_update_mode,
-            persist_activity_flag=persist_activity_flag,
+            persist_a_eff=persistence.a_eff,
+            persist_a_dir=persistence.a_dir,
+            persist_raw=persistence.s_eff,
+            persist_dir_raw=persistence.s_dir,
+            persist_slope=persistence.slope_eff,
+            persist_sign=_sign(persistence.s_eff),
+            persist_dir_sign=_sign(persistence.s_dir),
+            persist_dt_s=persistence.dt_s,
+            persist_gain_per_second=persistence.alpha_eff / (persistence.dt_s + EPSILON),
+            persist_input_deadband=persistence.input_deadband,
+            persist_step_coeff=persistence.alpha_eff,
+            persist_alpha_eff=persistence.alpha_eff,
+            persist_alpha_dir=persistence.alpha_dir,
+            persist_tau_eff_s=persistence.tau_eff_s,
+            persist_tau_dir_s=persistence.tau_dir_s,
+            persist_update_mode=persistence.mode,
+            persist_activity_flag=persistence.activity_flag,
+            persist_pivot_confirm_elapsed_s=persistence.pivot_confirm_elapsed_s,
+            persist_pivot_cooldown_remaining_s=persistence.pivot_cooldown_remaining_s,
+            persist_last_confirmed_dir_sign=persistence.last_confirmed_dir_sign,
+            persist_pivot_target_dir_sign=persistence.pivot_target_dir_sign,
+            persist_neutral_dir_abs_flash=persistence.neutral_dir_abs_flash,
+            persist_neutral_dir_abs_persist=persistence.neutral_dir_abs_persist,
+            size_effort_norm=size_effort_norm,
+            size_scale=size_scale,
             size_raw=size_raw,
             size_bin=size_bin,
             halo_raw=halo_raw,
@@ -308,9 +367,15 @@ class StateEngine:
         samples.sort()
         return _percentile(samples, self._defaults.effort_scale.percentile)
 
-    def _force_magnitude(self, dominance: float, total_effort: float) -> float:
-        dom = abs(dominance) / (total_effort + EPSILON)
-        return dom**0.5
+    def _size_scale(self) -> float:
+        samples = [value for _, value in self._recent_effort if value > 0.0]
+        if not samples:
+            return 0.0
+        min_samples = self._defaults.effort_scale.min_samples
+        if len(samples) < min_samples:
+            return median(samples)
+        samples.sort()
+        return _percentile(samples, self._defaults.size_scale.percentile)
 
     def _update_halo(self, halo_raw: float) -> float:
         if self._halo is None:
@@ -323,48 +388,212 @@ class StateEngine:
         self,
         now_ms: int,
         acceptance: float,
+        e_dir: float,
+        total_effort: float,
+        effort_norm: float,
         fallback_dt_s: float,
-    ) -> tuple[float, float, int, float, float, float, float, str, bool]:
-        if not self._defaults.persistence.enabled:
-            self._persist_state = 0.0
+    ) -> _PersistenceUpdate:
+        settings = self._defaults.persistence
+        neutral_dir_abs_flash = _clamp(settings.neutral_dir_abs_flash, 0.0, 1.0)
+        neutral_dir_abs_persist = _clamp(settings.neutral_dir_abs_persist, 0.0, 1.0)
+        if not settings.enabled:
+            self._persist_eff_state = 0.0
+            self._persist_dir_state = 0.0
             self._persist_last_ts_ms = now_ms
-            return 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, "disabled", False
+            self._persist_quiet_elapsed_s = 0.0
+            self._persist_pivot_active = False
+            self._persist_pivot_elapsed_s = 0.0
+            self._persist_pivot_rebuild_elapsed_s = 0.0
+            self._persist_pivot_confirm_elapsed_s = 0.0
+            self._persist_pivot_cooldown_remaining_s = 0.0
+            self._persist_last_confirmed_dir_sign = 0
+            self._persist_pivot_target_dir_sign = 0
+            return _PersistenceUpdate(
+                a_eff=0.0,
+                a_dir=0.0,
+                s_eff=0.0,
+                s_dir=0.0,
+                slope_eff=0.0,
+                dt_s=0.0,
+                input_deadband=0.0,
+                alpha_eff=0.0,
+                alpha_dir=0.0,
+                tau_eff_s=0.0,
+                tau_dir_s=0.0,
+                mode="disabled",
+                activity_flag=False,
+                pivot_confirm_elapsed_s=0.0,
+                pivot_cooldown_remaining_s=0.0,
+                last_confirmed_dir_sign=0,
+                pivot_target_dir_sign=0,
+                neutral_dir_abs_flash=neutral_dir_abs_flash,
+                neutral_dir_abs_persist=neutral_dir_abs_persist,
+            )
 
         if self._persist_last_ts_ms is None:
             dt_s = max(fallback_dt_s, EPSILON)
         else:
             dt_s = max((now_ms - self._persist_last_ts_ms) / 1000.0, EPSILON)
         self._persist_last_ts_ms = now_ms
-
-        gain_per_second = max(self._defaults.persistence.gain_per_second, EPSILON)
-        input_deadband = max(self._defaults.persistence.input_deadband, 0.0)
-        input_eff = acceptance if abs(acceptance) > input_deadband else 0.0
-        step_coeff = _clamp(gain_per_second * dt_s, 0.0, 1.0)
-
-        prev = self._persist_state
-        current = _clamp(prev + step_coeff * input_eff, -1.0, 1.0)
-        self._persist_state = current
-        slope = (current - prev) / dt_s
-        activity = abs(input_eff) > EPSILON
-        mode = "hold"
-        if activity:
-            prev_sign = _sign(prev)
-            acc_sign = _sign(input_eff)
-            if prev_sign == 0 or acc_sign == prev_sign:
-                mode = "build"
-            else:
-                mode = "oppose"
-        return (
-            current,
-            slope,
-            _sign(current),
-            dt_s,
-            gain_per_second,
-            input_deadband,
-            step_coeff,
-            mode,
-            activity,
+        self._persist_pivot_cooldown_remaining_s = max(
+            0.0, self._persist_pivot_cooldown_remaining_s - dt_s
         )
+
+        input_deadband = max(settings.input_deadband, 0.0)
+        a_eff = acceptance if abs(acceptance) > input_deadband else 0.0
+        activity_flag = abs(a_eff) > EPSILON
+        e_dir_share = e_dir / (total_effort + EPSILON) if total_effort > 0 else 0.0
+        dir_sign = _sign_deadband(e_dir_share, neutral_dir_abs_persist)
+        a_dir = dir_sign * max(a_eff, 0.0)
+
+        quiet = (
+            abs(a_eff) < settings.dormant_quiet_abs
+            and effort_norm < settings.dormant_effort_norm_threshold
+            and not self._persist_pivot_active
+        )
+        if quiet:
+            self._persist_quiet_elapsed_s += dt_s
+        else:
+            self._persist_quiet_elapsed_s = 0.0
+
+        mode = "active"
+        if self._persist_pivot_active:
+            mode = "pivot"
+        elif self._persist_quiet_elapsed_s >= settings.dormant_quiet_s:
+            mode = "dormant"
+
+        if mode == "dormant" and (
+            abs(a_eff) >= settings.dormant_active_abs
+            or effort_norm >= settings.dormant_effort_norm_threshold
+        ):
+            mode = "active"
+            self._persist_quiet_elapsed_s = 0.0
+
+        if mode == "active":
+            mode = self._maybe_enter_pivot(a_dir=a_dir, dt_s=dt_s)
+
+        prev_s_eff = self._persist_eff_state
+        tau_eff = settings.tau_eff_active
+        tau_dir = settings.tau_dir_active
+        alpha_eff = _alpha(dt_s, tau_eff)
+        alpha_dir = _alpha(dt_s, tau_dir)
+        target_eff = a_eff
+        target_dir = a_dir
+
+        if mode == "pivot":
+            tau_eff = settings.pivot_neutralize_tau
+            tau_dir = settings.tau_dir_pivot
+            alpha_eff = _alpha(dt_s, tau_eff)
+            alpha_dir = _alpha(dt_s, tau_dir)
+            target_eff = 0.0
+            target_dir = a_dir
+            self._persist_pivot_elapsed_s += dt_s
+        elif mode == "dormant":
+            tau_eff = settings.tau_dormant
+            tau_dir = settings.tau_dormant
+            alpha_eff = _alpha(dt_s, tau_eff)
+            alpha_dir = _alpha(dt_s, tau_dir)
+            target_eff = 0.0
+            target_dir = 0.0
+
+        next_eff = _clamp(
+            self._persist_eff_state + alpha_eff * (target_eff - self._persist_eff_state),
+            -1.0,
+            1.0,
+        )
+        if mode == "pivot":
+            max_delta = max(settings.max_delta_s_eff_per_second, 0.0) * dt_s
+            if max_delta > 0.0:
+                delta = _clamp(next_eff - self._persist_eff_state, -max_delta, max_delta)
+                next_eff = _clamp(self._persist_eff_state + delta, -1.0, 1.0)
+        self._persist_eff_state = next_eff
+        self._persist_dir_state = _clamp(
+            self._persist_dir_state + alpha_dir * (target_dir - self._persist_dir_state),
+            -1.0,
+            1.0,
+        )
+
+        if mode == "pivot":
+            if (
+                abs(self._persist_eff_state) <= settings.pivot_neutral_zone_abs
+                and abs(a_dir) >= settings.pivot_active_abs
+                and _sign(a_dir) == self._persist_pivot_target_dir_sign
+            ):
+                self._persist_pivot_rebuild_elapsed_s += dt_s
+            else:
+                self._persist_pivot_rebuild_elapsed_s = 0.0
+
+            if (
+                self._persist_pivot_rebuild_elapsed_s >= settings.rebuild_confirm_s
+                or self._persist_pivot_elapsed_s >= settings.pivot_max_s
+            ):
+                self._persist_pivot_active = False
+                self._persist_pivot_elapsed_s = 0.0
+                self._persist_pivot_rebuild_elapsed_s = 0.0
+                self._persist_pivot_confirm_elapsed_s = 0.0
+                self._persist_pivot_cooldown_remaining_s = settings.pivot_cooldown_s
+                if abs(a_dir) >= settings.pivot_active_abs and _sign(a_dir) != 0:
+                    self._persist_last_confirmed_dir_sign = _sign(a_dir)
+                elif self._persist_pivot_target_dir_sign != 0:
+                    self._persist_last_confirmed_dir_sign = self._persist_pivot_target_dir_sign
+                self._persist_pivot_target_dir_sign = 0
+                mode = "active"
+
+        slope = (self._persist_eff_state - prev_s_eff) / dt_s
+        return _PersistenceUpdate(
+            a_eff=a_eff,
+            a_dir=a_dir,
+            s_eff=self._persist_eff_state,
+            s_dir=self._persist_dir_state,
+            slope_eff=slope,
+            dt_s=dt_s,
+            input_deadband=input_deadband,
+            alpha_eff=alpha_eff,
+            alpha_dir=alpha_dir,
+            tau_eff_s=tau_eff,
+            tau_dir_s=tau_dir,
+            mode=mode,
+            activity_flag=activity_flag,
+            pivot_confirm_elapsed_s=self._persist_pivot_confirm_elapsed_s,
+            pivot_cooldown_remaining_s=self._persist_pivot_cooldown_remaining_s,
+            last_confirmed_dir_sign=self._persist_last_confirmed_dir_sign,
+            pivot_target_dir_sign=self._persist_pivot_target_dir_sign,
+            neutral_dir_abs_flash=neutral_dir_abs_flash,
+            neutral_dir_abs_persist=neutral_dir_abs_persist,
+        )
+
+    def _maybe_enter_pivot(self, *, a_dir: float, dt_s: float) -> str:
+        settings = self._defaults.persistence
+        dir_sign = _sign(a_dir)
+        if abs(a_dir) < settings.pivot_active_abs or dir_sign == 0:
+            self._persist_pivot_confirm_elapsed_s = 0.0
+            return "active"
+
+        if self._persist_last_confirmed_dir_sign == 0:
+            self._persist_pivot_confirm_elapsed_s += dt_s
+            if self._persist_pivot_confirm_elapsed_s >= settings.pivot_confirm_s:
+                self._persist_last_confirmed_dir_sign = dir_sign
+                self._persist_pivot_confirm_elapsed_s = 0.0
+            return "active"
+
+        if dir_sign == self._persist_last_confirmed_dir_sign:
+            self._persist_pivot_confirm_elapsed_s = 0.0
+            return "active"
+
+        if self._persist_pivot_cooldown_remaining_s > 0.0:
+            self._persist_pivot_confirm_elapsed_s = 0.0
+            return "active"
+
+        self._persist_pivot_confirm_elapsed_s += dt_s
+        if self._persist_pivot_confirm_elapsed_s < settings.pivot_confirm_s:
+            return "active"
+
+        self._persist_pivot_active = True
+        self._persist_pivot_elapsed_s = 0.0
+        self._persist_pivot_rebuild_elapsed_s = 0.0
+        self._persist_pivot_confirm_elapsed_s = 0.0
+        self._persist_pivot_target_dir_sign = dir_sign
+        return "pivot"
 
     def _resolve_persistence_input(
         self,
@@ -466,6 +695,20 @@ def _smooth(previous: float | None, current: float, alpha: float) -> float:
     if previous is None:
         return current
     return previous + alpha * (current - previous)
+
+
+def _alpha(dt_s: float, tau_s: float) -> float:
+    tau = max(tau_s, EPSILON)
+    return 1.0 - _exp(-dt_s / tau)
+
+
+def _sign_deadband(value: float, deadband: float) -> int:
+    threshold = max(deadband, 0.0)
+    if value > threshold:
+        return 1
+    if value < -threshold:
+        return -1
+    return 0
 
 
 def _source_stats(

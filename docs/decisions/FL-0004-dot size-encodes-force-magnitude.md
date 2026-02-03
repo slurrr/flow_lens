@@ -7,4 +7,4 @@ Dot size represents normalized dominance magnitude (force), independent of effec
 Separating force from outcome prevents the common error of equating movement with conviction and enables clear trap vs continuation distinctions.
 
 ## Status  
-Accepted (Invariant)
+Superseded by FL-0056.

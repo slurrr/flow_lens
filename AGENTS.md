@@ -37,7 +37,7 @@ Each visual channel has exactly one meaning.
 |--------|--------|
 | Dot position (X) | Control (spot vs perp) |
 | Dot position (Y) | Effectiveness (accepted vs rejected) |
-| Dot size | Force magnitude (dominance) |
+| Dot size | Force magnitude (total effort intensity) |
 | Halo | Dispersion of contributing effort |
 | Lean | Direction of structural change |
 
@@ -85,7 +85,7 @@ If a feature resembles a trading system component, it does not belong here.
 These are not tunables unless explicitly changed by a decision record:
 
 - Position is sacred (state only)
-- Dot size = normalized dominance
+- Dot size = per-symbol total effort intensity (see `docs/decisions/FL-0056-dot-size-total-effort-intensity.md`; do not use `sqrt(|X|)` or other dominance-derived sizing)
 - Halo = dispersion (not volume, not agreement)
 - Halo growth is slower than halo contraction
 - Effectiveness is directional and effort-normalized

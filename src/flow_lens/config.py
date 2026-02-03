@@ -31,14 +31,32 @@ class AppConfig:
     scale_window_seconds: float
     persist_enabled: bool
     persist_input: Literal["y_raw", "y_gated", "y"]
-    persist_gain_per_second: float
     persist_input_deadband: float
+    persist_neutral_dir_abs_flash: float
+    persist_neutral_dir_abs_persist: float
+    persist_tau_eff_active: float
+    persist_tau_dir_active: float
+    persist_pivot_active_abs: float
+    persist_pivot_confirm_s: float
+    persist_pivot_neutralize_tau: float
+    persist_pivot_neutral_zone_abs: float
+    persist_rebuild_confirm_s: float
+    persist_pivot_cooldown_s: float
+    persist_pivot_max_s: float
+    persist_max_delta_s_eff_per_second: float
+    persist_tau_dir_pivot: float
+    persist_dormant_quiet_abs: float
+    persist_dormant_active_abs: float
+    persist_dormant_quiet_s: float
+    persist_tau_dormant: float
+    persist_dormant_effort_norm_threshold: float
     disp_scale_multiplier: float
     disp_scale_percentile: float
     disp_scale_min_samples: int
     disp_scale_floor_percentile: float
     effort_scale_percentile: float
     effort_scale_min_samples: int
+    size_scale_percentile: float
     spot_price_stale_switch_ticks: int
     tui_min_width: int
     tui_min_height: int
@@ -81,14 +99,36 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     scale_window_seconds = runtime_section.get("scale_window_seconds", 600.0)
     persist_enabled = runtime_section.get("persist_enabled", True)
     persist_input = runtime_section.get("persist_input", "y_gated")
-    persist_gain_per_second = runtime_section.get("persist_gain_per_second", 0.5)
     persist_input_deadband = runtime_section.get("persist_input_deadband", 0.0)
+    persist_neutral_dir_abs_flash = runtime_section.get("persist_neutral_dir_abs_flash", 0.05)
+    persist_neutral_dir_abs_persist = runtime_section.get("persist_neutral_dir_abs_persist", 0.05)
+    persist_tau_eff_active = runtime_section.get("persist_tau_eff_active", 18.0)
+    persist_tau_dir_active = runtime_section.get("persist_tau_dir_active", 12.0)
+    persist_pivot_active_abs = runtime_section.get("persist_pivot_active_abs", 0.10)
+    persist_pivot_confirm_s = runtime_section.get("persist_pivot_confirm_s", 6.0)
+    persist_pivot_neutralize_tau = runtime_section.get("persist_pivot_neutralize_tau", 3.0)
+    persist_pivot_neutral_zone_abs = runtime_section.get("persist_pivot_neutral_zone_abs", 0.08)
+    persist_rebuild_confirm_s = runtime_section.get("persist_rebuild_confirm_s", 4.0)
+    persist_pivot_cooldown_s = runtime_section.get("persist_pivot_cooldown_s", 10.0)
+    persist_pivot_max_s = runtime_section.get("persist_pivot_max_s", 18.0)
+    persist_max_delta_s_eff_per_second = runtime_section.get(
+        "persist_max_delta_s_eff_per_second", 0.4
+    )
+    persist_tau_dir_pivot = runtime_section.get("persist_tau_dir_pivot", 4.0)
+    persist_dormant_quiet_abs = runtime_section.get("persist_dormant_quiet_abs", 0.04)
+    persist_dormant_active_abs = runtime_section.get("persist_dormant_active_abs", 0.08)
+    persist_dormant_quiet_s = runtime_section.get("persist_dormant_quiet_s", 20.0)
+    persist_tau_dormant = runtime_section.get("persist_tau_dormant", 45.0)
+    persist_dormant_effort_norm_threshold = runtime_section.get(
+        "persist_dormant_effort_norm_threshold", 0.35
+    )
     disp_scale_multiplier = runtime_section.get("disp_scale_multiplier", 0.25)
     disp_scale_percentile = runtime_section.get("disp_scale_percentile", 0.75)
     disp_scale_min_samples = runtime_section.get("disp_scale_min_samples", 20)
     disp_scale_floor_percentile = runtime_section.get("disp_scale_floor_percentile", 0.1)
     effort_scale_percentile = runtime_section.get("effort_scale_percentile", 0.5)
     effort_scale_min_samples = runtime_section.get("effort_scale_min_samples", 20)
+    size_scale_percentile = runtime_section.get("size_scale_percentile", effort_scale_percentile)
     spot_price_stale_switch_ticks = runtime_section.get("spot_price_stale_switch_ticks", 3)
     tui_min_width = runtime_section.get("tui_min_width", 41)
     tui_min_height = runtime_section.get("tui_min_height", 17)
@@ -130,14 +170,91 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.persist_input must be a string.")
     if persist_input not in {"y_raw", "y_gated", "y"}:
         raise ValueError("runtime.persist_input must be one of: y_raw, y_gated, y.")
-    if not isinstance(persist_gain_per_second, (int, float)):
-        raise ValueError("runtime.persist_gain_per_second must be a number.")
-    if float(persist_gain_per_second) <= 0:
-        raise ValueError("runtime.persist_gain_per_second must be > 0.")
     if not isinstance(persist_input_deadband, (int, float)):
         raise ValueError("runtime.persist_input_deadband must be a number.")
     if float(persist_input_deadband) < 0:
         raise ValueError("runtime.persist_input_deadband must be >= 0.")
+    if not isinstance(persist_neutral_dir_abs_flash, (int, float)):
+        raise ValueError("runtime.persist_neutral_dir_abs_flash must be a number.")
+    if not isinstance(persist_neutral_dir_abs_persist, (int, float)):
+        raise ValueError("runtime.persist_neutral_dir_abs_persist must be a number.")
+    if not isinstance(persist_tau_eff_active, (int, float)):
+        raise ValueError("runtime.persist_tau_eff_active must be a number.")
+    if not isinstance(persist_tau_dir_active, (int, float)):
+        raise ValueError("runtime.persist_tau_dir_active must be a number.")
+    if not isinstance(persist_pivot_active_abs, (int, float)):
+        raise ValueError("runtime.persist_pivot_active_abs must be a number.")
+    if not isinstance(persist_pivot_confirm_s, (int, float)):
+        raise ValueError("runtime.persist_pivot_confirm_s must be a number.")
+    if not isinstance(persist_pivot_neutralize_tau, (int, float)):
+        raise ValueError("runtime.persist_pivot_neutralize_tau must be a number.")
+    if not isinstance(persist_pivot_neutral_zone_abs, (int, float)):
+        raise ValueError("runtime.persist_pivot_neutral_zone_abs must be a number.")
+    if not isinstance(persist_rebuild_confirm_s, (int, float)):
+        raise ValueError("runtime.persist_rebuild_confirm_s must be a number.")
+    if not isinstance(persist_pivot_cooldown_s, (int, float)):
+        raise ValueError("runtime.persist_pivot_cooldown_s must be a number.")
+    if not isinstance(persist_pivot_max_s, (int, float)):
+        raise ValueError("runtime.persist_pivot_max_s must be a number.")
+    if not isinstance(persist_max_delta_s_eff_per_second, (int, float)):
+        raise ValueError("runtime.persist_max_delta_s_eff_per_second must be a number.")
+    if not isinstance(persist_tau_dir_pivot, (int, float)):
+        raise ValueError("runtime.persist_tau_dir_pivot must be a number.")
+    if not isinstance(persist_dormant_quiet_abs, (int, float)):
+        raise ValueError("runtime.persist_dormant_quiet_abs must be a number.")
+    if not isinstance(persist_dormant_active_abs, (int, float)):
+        raise ValueError("runtime.persist_dormant_active_abs must be a number.")
+    if not isinstance(persist_dormant_quiet_s, (int, float)):
+        raise ValueError("runtime.persist_dormant_quiet_s must be a number.")
+    if not isinstance(persist_tau_dormant, (int, float)):
+        raise ValueError("runtime.persist_tau_dormant must be a number.")
+    if not isinstance(persist_dormant_effort_norm_threshold, (int, float)):
+        raise ValueError("runtime.persist_dormant_effort_norm_threshold must be a number.")
+    if float(persist_neutral_dir_abs_flash) < 0 or float(persist_neutral_dir_abs_flash) >= 1:
+        raise ValueError("runtime.persist_neutral_dir_abs_flash must be between 0 and 1.")
+    if (
+        float(persist_neutral_dir_abs_persist) < 0
+        or float(persist_neutral_dir_abs_persist) >= 1
+    ):
+        raise ValueError("runtime.persist_neutral_dir_abs_persist must be between 0 and 1.")
+    if float(persist_tau_eff_active) <= 0:
+        raise ValueError("runtime.persist_tau_eff_active must be > 0.")
+    if float(persist_tau_dir_active) <= 0:
+        raise ValueError("runtime.persist_tau_dir_active must be > 0.")
+    if float(persist_pivot_active_abs) < 0 or float(persist_pivot_active_abs) > 1:
+        raise ValueError("runtime.persist_pivot_active_abs must be between 0 and 1.")
+    if float(persist_pivot_confirm_s) <= 0:
+        raise ValueError("runtime.persist_pivot_confirm_s must be > 0.")
+    if float(persist_pivot_neutralize_tau) <= 0:
+        raise ValueError("runtime.persist_pivot_neutralize_tau must be > 0.")
+    if float(persist_pivot_neutral_zone_abs) < 0 or float(persist_pivot_neutral_zone_abs) > 1:
+        raise ValueError("runtime.persist_pivot_neutral_zone_abs must be between 0 and 1.")
+    if float(persist_rebuild_confirm_s) <= 0:
+        raise ValueError("runtime.persist_rebuild_confirm_s must be > 0.")
+    if float(persist_pivot_cooldown_s) < 0:
+        raise ValueError("runtime.persist_pivot_cooldown_s must be >= 0.")
+    if float(persist_pivot_max_s) <= 0:
+        raise ValueError("runtime.persist_pivot_max_s must be > 0.")
+    if float(persist_max_delta_s_eff_per_second) < 0:
+        raise ValueError("runtime.persist_max_delta_s_eff_per_second must be >= 0.")
+    if float(persist_tau_dir_pivot) <= 0:
+        raise ValueError("runtime.persist_tau_dir_pivot must be > 0.")
+    if float(persist_dormant_quiet_abs) < 0 or float(persist_dormant_quiet_abs) > 1:
+        raise ValueError("runtime.persist_dormant_quiet_abs must be between 0 and 1.")
+    if float(persist_dormant_active_abs) < 0 or float(persist_dormant_active_abs) > 1:
+        raise ValueError("runtime.persist_dormant_active_abs must be between 0 and 1.")
+    if float(persist_dormant_active_abs) < float(persist_dormant_quiet_abs):
+        raise ValueError(
+            "runtime.persist_dormant_active_abs must be >= runtime.persist_dormant_quiet_abs."
+        )
+    if float(persist_dormant_quiet_s) <= 0:
+        raise ValueError("runtime.persist_dormant_quiet_s must be > 0.")
+    if float(persist_tau_dormant) <= 0:
+        raise ValueError("runtime.persist_tau_dormant must be > 0.")
+    if float(persist_dormant_effort_norm_threshold) < 0:
+        raise ValueError("runtime.persist_dormant_effort_norm_threshold must be >= 0.")
+    if float(persist_pivot_max_s) < float(persist_pivot_confirm_s):
+        raise ValueError("runtime.persist_pivot_max_s must be >= runtime.persist_pivot_confirm_s.")
     if not isinstance(disp_scale_multiplier, (int, float)):
         raise ValueError("runtime.disp_scale_multiplier must be a number.")
     if not isinstance(disp_scale_percentile, (int, float)):
@@ -156,10 +273,14 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.effort_scale_percentile must be a number.")
     if not isinstance(effort_scale_min_samples, int):
         raise ValueError("runtime.effort_scale_min_samples must be an integer.")
+    if not isinstance(size_scale_percentile, (int, float)):
+        raise ValueError("runtime.size_scale_percentile must be a number.")
     if not isinstance(spot_price_stale_switch_ticks, int):
         raise ValueError("runtime.spot_price_stale_switch_ticks must be an integer.")
     if effort_scale_percentile <= 0 or effort_scale_percentile >= 1:
         raise ValueError("runtime.effort_scale_percentile must be between 0 and 1.")
+    if size_scale_percentile <= 0 or size_scale_percentile >= 1:
+        raise ValueError("runtime.size_scale_percentile must be between 0 and 1.")
     if effort_scale_min_samples <= 0:
         raise ValueError("runtime.effort_scale_min_samples must be > 0.")
     if spot_price_stale_switch_ticks <= 0:
@@ -238,14 +359,32 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         scale_window_seconds=float(scale_window_seconds),
         persist_enabled=bool(persist_enabled),
         persist_input=cast(Literal["y_raw", "y_gated", "y"], persist_input),
-        persist_gain_per_second=float(persist_gain_per_second),
         persist_input_deadband=float(persist_input_deadband),
+        persist_neutral_dir_abs_flash=float(persist_neutral_dir_abs_flash),
+        persist_neutral_dir_abs_persist=float(persist_neutral_dir_abs_persist),
+        persist_tau_eff_active=float(persist_tau_eff_active),
+        persist_tau_dir_active=float(persist_tau_dir_active),
+        persist_pivot_active_abs=float(persist_pivot_active_abs),
+        persist_pivot_confirm_s=float(persist_pivot_confirm_s),
+        persist_pivot_neutralize_tau=float(persist_pivot_neutralize_tau),
+        persist_pivot_neutral_zone_abs=float(persist_pivot_neutral_zone_abs),
+        persist_rebuild_confirm_s=float(persist_rebuild_confirm_s),
+        persist_pivot_cooldown_s=float(persist_pivot_cooldown_s),
+        persist_pivot_max_s=float(persist_pivot_max_s),
+        persist_max_delta_s_eff_per_second=float(persist_max_delta_s_eff_per_second),
+        persist_tau_dir_pivot=float(persist_tau_dir_pivot),
+        persist_dormant_quiet_abs=float(persist_dormant_quiet_abs),
+        persist_dormant_active_abs=float(persist_dormant_active_abs),
+        persist_dormant_quiet_s=float(persist_dormant_quiet_s),
+        persist_tau_dormant=float(persist_tau_dormant),
+        persist_dormant_effort_norm_threshold=float(persist_dormant_effort_norm_threshold),
         disp_scale_multiplier=float(disp_scale_multiplier),
         disp_scale_percentile=float(disp_scale_percentile),
         disp_scale_min_samples=int(disp_scale_min_samples),
         disp_scale_floor_percentile=float(disp_scale_floor_percentile),
         effort_scale_percentile=float(effort_scale_percentile),
         effort_scale_min_samples=int(effort_scale_min_samples),
+        size_scale_percentile=float(size_scale_percentile),
         spot_price_stale_switch_ticks=int(spot_price_stale_switch_ticks),
         tui_min_width=int(tui_min_width),
         tui_min_height=int(tui_min_height),

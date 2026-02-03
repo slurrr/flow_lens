@@ -12,4 +12,4 @@ This aligns persistence with the lens goal of showing acceptance/rejection accum
 
 ## Status
 
-Accepted (Experimental)
+Superseded by FL-0055.

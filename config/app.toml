@@ -77,9 +77,25 @@ scale_window_seconds = 420.0
 
 persist_enabled = true
 persist_input = "y_gated"
-# Phase 1 (M1): no quiet-time decay; opposing signed input unwinds persistence.
-persist_gain_per_second = 0.03
 persist_input_deadband = 0.0
+persist_neutral_dir_abs_flash = 0.05
+persist_neutral_dir_abs_persist = 0.05
+persist_tau_eff_active = 18.0
+persist_tau_dir_active = 12.0
+persist_pivot_active_abs = 0.10
+persist_pivot_confirm_s = 6.0
+persist_pivot_neutralize_tau = 3.0
+persist_pivot_neutral_zone_abs = 0.08
+persist_rebuild_confirm_s = 4.0
+persist_pivot_cooldown_s = 10.0
+persist_pivot_max_s = 18.0
+persist_max_delta_s_eff_per_second = 0.4
+persist_tau_dir_pivot = 4.0
+persist_dormant_quiet_abs = 0.04
+persist_dormant_active_abs = 0.08
+persist_dormant_quiet_s = 20.0
+persist_tau_dormant = 45.0
+persist_dormant_effort_norm_threshold = 0.35
 
 disp_scale_multiplier = 0.10    # deadband try .15 - .2
 disp_scale_percentile = 0.80
@@ -88,6 +104,7 @@ disp_scale_floor_percentile = 0.0
 
 effort_scale_percentile = 0.5
 effort_scale_min_samples = 20
+size_scale_percentile = 0.5
 
 effort_floor_multiplier = 0.2    # 0.15
 effort_floor_ticks = 60

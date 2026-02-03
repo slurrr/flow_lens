@@ -204,6 +204,47 @@ What it needs:
 - Existing `price_series_used` in compact view.
 - Optional switch cooldown marker.
 
+---
+
+### 10) Persistence Provenance Lock (Who Built `S`)
+
+Add a provenance state that tracks which side (bulls or bears) built the current persistence line over time.
+
+Concept:
+
+- Keep line position semantics unchanged (`S_t` stays persisted effectiveness).
+- Color line by a new locked provenance state (`S_driver`), not by instantaneous tick direction.
+- Provenance should not flip until opposite pressure meaningfully takes over.
+
+Why it helps:
+
+- Solves "I can see persistence, but I cannot tell who built it."
+- Preserves immediate bull/bear cue in axis flashes while adding medium-horizon control context.
+- Makes transitions from "bull-built" to neutral/bear-built explicitly visible, which may carry high informational value.
+
+Behavior sketch (planning-only):
+
+- When `|S_t|` is building, reinforce provenance toward current bull/bear pressure sign.
+- During unwind/quiet, decay provenance slowly toward neutral.
+- Require threshold + hysteresis before provenance color flips to the opposite side.
+
+Risks to manage:
+
+- Semantic confusion if line position and color conflict without clear framing.
+- Chop drift (path-dependent sticky color that outlives truth).
+- Redundancy risk if provenance collapses into a noisy proxy of `S` or `E_dir`.
+- Flip instability (too twitchy) or flip lag (too sticky).
+
+Implementation discipline:
+
+- Treat this as new stateful behavior, not a render-only tweak.
+- Define a phased behavior contract before coding:
+  - locked semantic definition,
+  - update law + thresholds/hysteresis,
+  - replay fail metrics (chop drift, flip latency, stale hold),
+  - fallback plan if model drifts.
+- Capture with a decision record before implementation.
+
 ## Suggested Rollout Order
 
 1. Regime Strip  
@@ -215,6 +256,7 @@ What it needs:
 7. Acceptance/Rejecting Axis Color Flash
 8. Acceptance Direction Ribbon
 9. Price-Series Provenance Badge
+10. Persistence Provenance Lock
 
 Rationale:
 

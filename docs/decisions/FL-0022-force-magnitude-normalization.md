@@ -15,4 +15,4 @@ Using normalized dominance instead of raw effort ensures size represents decisiv
 
 ## Status
 
-Accepted (Invariant)
+Superseded by FL-0056.

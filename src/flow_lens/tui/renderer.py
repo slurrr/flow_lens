@@ -10,7 +10,6 @@ from flow_lens.engine.state_engine import StateSnapshot
 from flow_lens.tui.metrics import LiveMetricsSnapshot
 
 CursesWindow: TypeAlias = Any
-
 @dataclass(frozen=True)
 class RendererConfig:
     # Lens box dimensions in terminal cells (odd numbers center axes cleanly).
@@ -41,6 +40,7 @@ class Renderer:
         self._last_y: float | None = None
         self._last_state_id: int | None = None
         self._axis_flash_sign: int = 0
+        self._axis_flash_target: int = 0
         self._axis_flash_until: float = 0.0
         self._axis_flash_cooldown_until: float = 0.0
 
@@ -62,6 +62,8 @@ class Renderer:
         maxy, maxx = stdscr.getmaxyx()
         if maxx <= 1 or maxy <= 1:
             return
+        if curses.has_colors():
+            self._ensure_colors()
 
         header = symbol if not search_mode else f"{symbol}   /{search_buffer}"
         self._draw_header(stdscr, header, maxx, row=0)
@@ -112,6 +114,7 @@ class Renderer:
             self._last_y = None
             self._last_state_id = None
             self._axis_flash_sign = 0
+            self._axis_flash_target = 0
             self._axis_flash_until = 0.0
             self._axis_flash_cooldown_until = 0.0
             self._draw_labels(
@@ -133,9 +136,20 @@ class Renderer:
 
         is_new_update = id(state) != self._last_state_id
         if is_new_update:
-            self._last_y = state.y
+            prev_y = self._last_y
+            y_shift_sign = 0
+            if prev_y is not None:
+                y_shift_sign = _sign_value(state.y - prev_y)
             self._last_state_id = id(state)
-            self._maybe_trigger_axis_flash(_sign_value(state.disp))
+            self._maybe_trigger_axis_flash(
+                _bull_bear_sign(
+                    state.e_dir,
+                    state.total_effort,
+                    state.persist_neutral_dir_abs_flash,
+                ),
+                y_shift_sign,
+            )
+            self._last_y = state.y
 
         self._draw_labels(
             stdscr,
@@ -260,25 +274,31 @@ class Renderer:
 
         spot_attr = 0
         perp_attr = 0
-        axis_attr = 0
+        top_attr = 0
+        bot_attr = 0
         if curses.has_colors():
             self._ensure_colors()
             if status_spot is not None:
                 spot_attr = curses.color_pair(_status_color(status_spot))
             if status_perp is not None:
                 perp_attr = curses.color_pair(_status_color(status_perp))
+            flash_attr = 0
             if axis_flash_sign > 0:
-                axis_attr = curses.color_pair(1)
+                flash_attr = curses.color_pair(1)
             elif axis_flash_sign < 0:
-                axis_attr = curses.color_pair(3)
+                flash_attr = curses.color_pair(3)
+            if self._axis_flash_target > 0:
+                top_attr = flash_attr
+            elif self._axis_flash_target < 0:
+                bot_attr = flash_attr
 
         tx = map_left + max(0, (map_width - len(top)) // 2)
         if map_top - 1 >= 1 and tx + len(top) < maxx:
-            _safe_addstr(stdscr, map_top - 1, tx, top, attr=axis_attr)
+            _safe_addstr(stdscr, map_top - 1, tx, top, attr=top_attr)
 
         bx = map_left + max(0, (map_width - len(bot)) // 2)
         if map_bottom + 1 < maxy and bx + len(bot) < maxx:
-            _safe_addstr(stdscr, map_bottom + 1, bx, bot, attr=axis_attr)
+            _safe_addstr(stdscr, map_bottom + 1, bx, bot, attr=bot_attr)
 
         if map_left - len(left) - 1 >= 0 and map_top + map_height // 2 < maxy:
             if perp_attr:
@@ -304,18 +324,25 @@ class Renderer:
             else:
                 _safe_addstr(stdscr, map_top + map_height // 2, map_right + 2, right)
 
-    def _maybe_trigger_axis_flash(self, disp_sign: int) -> None:
-        if disp_sign == 0:
+    def _maybe_trigger_axis_flash(self, disp_sign: int, y_shift_sign: int) -> None:
+        if disp_sign == 0 or y_shift_sign == 0:
             return
         now = time.monotonic()
-        if now < self._axis_flash_cooldown_until and disp_sign == self._axis_flash_sign:
+        if (
+            now < self._axis_flash_cooldown_until
+            and disp_sign == self._axis_flash_sign
+            and y_shift_sign == self._axis_flash_target
+        ):
             return
         self._axis_flash_sign = disp_sign
+        self._axis_flash_target = y_shift_sign
         self._axis_flash_until = now + max(0.0, self._config.axis_flash_duration_s)
         self._axis_flash_cooldown_until = now + max(0.0, self._config.axis_flash_cooldown_s)
 
     def _axis_flash_active(self) -> bool:
         if self._axis_flash_sign == 0:
+            return False
+        if self._axis_flash_target == 0:
             return False
         return time.monotonic() <= self._axis_flash_until
 
@@ -332,6 +359,8 @@ class Renderer:
         maxy: int,
     ) -> None:
         canvas = _BrailleCanvas(map_width, map_height)
+        persist_canvas: _BrailleCanvas | None = None
+        persist_attr = 0
         center_x = canvas.width_px // 2
         center_y = canvas.height_px // 2
         if self._config.frame_enabled:
@@ -350,11 +379,16 @@ class Renderer:
                 _, persist_y = _norm_to_braille(0.0, state.persist_raw, map_width, map_height)
                 if persist_y != center_y:
                     # Preserve the solid vertical axis cell so line and axis remain distinct.
-                    canvas.draw_hline(
+                    persist_canvas = _BrailleCanvas(map_width, map_height)
+                    persist_canvas.draw_hline(
                         persist_y,
                         step=2,
                         skip_x_min=center_x - 1,
                         skip_x_max=center_x,
+                    )
+                    persist_attr = _persist_provenance_attr(
+                        state.persist_dir_raw,
+                        state.persist_neutral_dir_abs_persist,
                     )
 
             dot_cell_x, dot_cell_y = _norm_to_grid(state.x, state.y, map_width, map_height)
@@ -365,6 +399,8 @@ class Renderer:
             _draw_dot(canvas, dot_x, dot_y, state.size_bin, self._config.dot_radii)
 
         canvas.blit(stdscr, map_top, map_left, maxx, maxy)
+        if persist_canvas is not None:
+            persist_canvas.blit(stdscr, map_top, map_left, maxx, maxy, attr=persist_attr)
 
     def _draw_axes_overlay(
         self,
@@ -611,6 +647,38 @@ def _sign_value(value: float) -> int:
     return 0
 
 
+def _bull_bear_sign(e_dir: float, total_effort: float, deadband: float) -> int:
+    if total_effort <= 0:
+        return 0
+    share = e_dir / total_effort
+    threshold = max(deadband, 0.0)
+    if share > threshold:
+        return 1
+    if share < -threshold:
+        return -1
+    return 0
+
+
+def _persist_provenance_attr(s_dir: float, deadband: float) -> int:
+    if not curses.has_colors():
+        return 0
+    sign = _sign_with_deadband(s_dir, deadband)
+    if sign > 0:
+        return curses.color_pair(1)
+    if sign < 0:
+        return curses.color_pair(3)
+    return 0
+
+
+def _sign_with_deadband(value: float, deadband: float) -> int:
+    threshold = max(deadband, 0.0)
+    if value > threshold:
+        return 1
+    if value < -threshold:
+        return -1
+    return 0
+
+
 def _addstr_limited(
     stdscr: CursesWindow, y: int, x: int, text: str, maxx: int, attr: int = 0
 ) -> int:
@@ -675,7 +743,16 @@ class _BrailleCanvas:
         for y in range(0, self.height_px, max(1, step)):
             self.set_px(x, y)
 
-    def blit(self, stdscr: CursesWindow, top: int, left: int, maxx: int, maxy: int) -> None:
+    def blit(
+        self,
+        stdscr: CursesWindow,
+        top: int,
+        left: int,
+        maxx: int,
+        maxy: int,
+        *,
+        attr: int = 0,
+    ) -> None:
         for row, masks in enumerate(self._cells):
             y = top + row
             if y < 0 or y >= maxy:
@@ -686,7 +763,7 @@ class _BrailleCanvas:
                 x = left + col
                 if x < 0 or x >= maxx - 1:
                     continue
-                _safe_addstr(stdscr, y, x, chr(0x2800 + mask))
+                _safe_addstr(stdscr, y, x, chr(0x2800 + mask), attr=attr)
 
 
 def _draw_dot(

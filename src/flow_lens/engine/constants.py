@@ -38,8 +38,25 @@ class InputNormalization:
 class Persistence:
     enabled: bool = True
     input_source: PersistenceInput = "y_gated"
-    gain_per_second: float = 0.5
     input_deadband: float = 0.0
+    neutral_dir_abs_flash: float = 0.05
+    neutral_dir_abs_persist: float = 0.05
+    tau_eff_active: float = 18.0
+    tau_dir_active: float = 12.0
+    pivot_active_abs: float = 0.10
+    pivot_confirm_s: float = 6.0
+    pivot_neutralize_tau: float = 3.0
+    pivot_neutral_zone_abs: float = 0.08
+    rebuild_confirm_s: float = 4.0
+    pivot_cooldown_s: float = 10.0
+    pivot_max_s: float = 18.0
+    max_delta_s_eff_per_second: float = 0.4
+    tau_dir_pivot: float = 4.0
+    dormant_quiet_abs: float = 0.04
+    dormant_active_abs: float = 0.08
+    dormant_quiet_s: float = 20.0
+    tau_dormant: float = 45.0
+    dormant_effort_norm_threshold: float = 0.35
 
 
 @dataclass(frozen=True)
@@ -58,6 +75,11 @@ class DispScaleConfig:
 class EffortScaleConfig:
     percentile: float = 0.5
     min_samples: int = 20
+
+
+@dataclass(frozen=True)
+class SizeScaleConfig:
+    percentile: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -85,5 +107,6 @@ class Defaults:
     effectiveness_deadband: EffectivenessDeadband = EffectivenessDeadband()
     disp_scale: DispScaleConfig = DispScaleConfig()
     effort_scale: EffortScaleConfig = EffortScaleConfig()
+    size_scale: SizeScaleConfig = SizeScaleConfig()
     halo_dynamics: HaloDynamics = HaloDynamics()
     binning: Binning = Binning()

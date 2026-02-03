@@ -149,3 +149,156 @@ Use the existing Tier 1 gate (BTC + SOL top1) plus targeted drilldowns (per-file
 
 For procedural steps, see `docs/reference/stability-checklist.md`.
 
+---
+
+## 7) Experiment B — Directional provenance + support-required persistence (Phase 1b)
+
+This experiment is prompted by the “directional stacking” issue documented in:
+
+- `docs/reference/persistence-directionality-findings-2026-02-03.md`
+
+### 7.1 Problem statement
+
+`S` as “persisted effectiveness” is semantically correct, but operationally confusing:
+
+- bull-accepted and bear-accepted flow can both increase “acceptance persistence”,
+- so `S` can rise/hold while the accepted-direction regime has already flipped.
+
+This is not solved by decay alone. It requires a decomposition of:
+
+- **how much persistence** exists, and
+- **who built it**.
+
+### 7.2 Locked semantics (channels)
+
+- Axis flash (FL-0053) = **now-pressure** (`E_dir / E_total` with deadband).
+- Line position = `S_eff` = **persisted effectiveness** (accept/reject persistence).
+- Line color = `S_dir` = **provenance of accepted effectiveness** (“who built the persistence”), not current pressure.
+
+This supersedes the intent of FL-0054 and requires a new decision record (FL-XXXX) before locking.
+
+### 7.3 Canonical inputs
+
+- `A_eff = Y_gated` (must match the dot’s effectiveness semantic layer)
+- `A_dir = sign(E_dir) * max(A_eff, 0)` (accepted-only provenance; rejected does not claim direction)
+
+Direction sign source is canonical (`E_dir / E_total`), but allow separate neutral deadbands if needed:
+
+- `neutral_dir_abs_flash` for axis flash
+- `neutral_dir_abs_persist` for provenance/pivot logic
+
+Default them equal; only diverge if it improves perceptual stability.
+
+### 7.4 Update law (dt-safe, bounded)
+
+Use a dt-safe approach-to-target form for both states (support-required by construction):
+
+- `alpha(dt, tau) = 1 - exp(-dt / tau)`
+- `S <- S + alpha * (A - S)` with clamp to `[-1, 1]`
+
+This provides natural fade toward neutral when inputs go quiet, without blanket time-decay during active markets.
+
+### 7.5 Controllers (mode machine)
+
+Modes are exclusive with precedence:
+
+1) `pivot` (highest) → 2) `active` → 3) `dormant` (lowest; quiet-only)
+
+#### Active (default)
+
+- `S_eff` tracks `A_eff` with `tau_eff_active`
+- `S_dir` tracks `A_dir` with `tau_dir_active`
+
+#### Pivot neutralization (handoff)
+
+Trigger (all required, dt-safe):
+
+- accepted activity: `|A_dir| >= pivot_active_abs`
+- accepted-direction flip vs last confirmed direction
+- confirmation: flip holds for `pivot_confirm_s` seconds
+- cooldown not active (`pivot_cooldown_remaining_s == 0`)
+
+Behavior:
+
+- enter `pivot` mode (failsafe: `pivot_max_s`)
+- accelerate `S_eff -> 0` (no hard reset)
+- cap neutralization per **second**, not per tick: `max_delta_s_eff_per_second` (derive per-tick cap from dt)
+- allow rebuild only after `|S_eff| <= pivot_neutral_zone_abs` and sustained new-side confirmation (`rebuild_confirm_s`)
+- start cooldown (`pivot_cooldown_s`)
+
+#### Dormancy decay (quiet-time relax)
+
+Entry requires BOTH:
+
+- `|A_eff| < dormant_quiet_abs` for `dormant_quiet_s`
+- low activity (e.g., low `E_rate` and/or low event counts) so active-but-balanced periods are not misclassified as dormant
+
+Behavior:
+
+- slow relax of `S_eff` and `S_dir` toward 0 (`tau_dormant`)
+
+Exit (hysteresis):
+
+- `|A_eff| >= dormant_active_abs` and/or activity rises above dormancy threshold
+
+Hard rule: pivot cannot trigger in dormancy.
+
+### 7.6 Minimal knobs (start conservative)
+
+Directional deadbands:
+
+- `neutral_dir_abs_flash`
+- `neutral_dir_abs_persist`
+
+Active tracking:
+
+- `tau_eff_active`, `tau_dir_active`
+
+Pivot:
+
+- `pivot_active_abs`
+- `pivot_confirm_s`
+- `pivot_neutralize_tau` (or `tau_eff_pivot`)
+- `pivot_neutral_zone_abs`
+- `rebuild_confirm_s`
+- `pivot_cooldown_s`
+- `max_delta_s_eff_per_second`
+
+Dormancy:
+
+- `dormant_quiet_abs`, `dormant_active_abs`
+- `dormant_quiet_s`
+- `tau_dormant`
+- `dormant_activity_threshold` (definition must be explicit: `E_rate`, event counts, or both)
+
+### 7.7 Diagnostics required for fail-fast
+
+Per tick:
+
+- `A_eff`, `A_dir`
+- `S_eff`, `S_dir`
+- `persist_dt_s`
+- applied alphas/taus (effective coefficients per tick)
+- `persist_mode` (`active|pivot|dormant`)
+- pivot counters: confirm accumulator + cooldown remaining
+
+### 7.8 Pass/fail criteria (must lock numbers before coding)
+
+Add two criteria to the existing persistence evaluation set:
+
+1) Directional stacking prevention:
+   - under sustained accepted-direction flip, `S_eff` must reach `|S_eff| <= pivot_neutral_zone_abs` within `X` seconds (p50/p90).
+2) Provenance coherence:
+   - under sustained opposite accepted flow, `S_dir` must cross 0 within `Y` seconds (p50/p90).
+
+Also lock:
+
+- pivot spam bound in chop (`Z` triggers/min max),
+- no-cliff bounds (`max |ΔS_eff|` per second; max color flips/min).
+
+### 7.9 Implementation sequencing (gated)
+
+1) Add internal `S_dir` + switch line color to provenance (`S_dir`) while keeping existing `S_eff` dynamics.
+2) Add pivot controller (caps + cooldown) and replay-gate.
+3) Add dormancy controller and replay-gate.
+4) Only after stability: consider any asymmetry (“gravity”) strictly inside dormancy.

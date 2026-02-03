@@ -47,7 +47,7 @@ Do not turn Flow Lens into:
 
 Flow Lens models **force interacting with resistance**.
 
-- **Force** = normalized dominance of effort
+- **Force** = per-symbol normalized total effort intensity (dot size; see `docs/decisions/FL-0056-dot-size-total-effort-intensity.md`)
 - **Effectiveness** = displacement per unit effort
 - **Dispersion** = how concentrated vs distributed that effort is
 
@@ -85,7 +85,7 @@ These rules define Flow Lens. Breaking them breaks the tool.
 ### Visual invariants
 
 - Dot position = state only
-- Dot size = force magnitude only
+- Dot size = force magnitude only (per-symbol total effort intensity; see `docs/decisions/FL-0056-dot-size-total-effort-intensity.md`)
 - Halo = dispersion only
 - Lean = direction of change only
 
