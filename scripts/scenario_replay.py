@@ -15,10 +15,18 @@ from typing import Iterable, Iterator, TextIO, cast
 from flow_lens.config import AppConfig, load_app_config
 from flow_lens.engine.buffer import RollingEventBuffer
 from flow_lens.engine.constants import (
+    Binning,
     Defaults,
+    DispScaleConfig,
     EffectivenessDeadband,
     EffectivenessScaling,
+    EffortFloor,
+    EffortScaleConfig,
+    HaloDynamics,
     InputNormalization,
+    Persistence,
+    Smoothing,
+    TimeDomain,
 )
 from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
@@ -207,19 +215,46 @@ def _merge_event_iters(iters: list[Iterator[ReplayEvent]]) -> Iterator[ReplayEve
 
 
 def _build_defaults(config: AppConfig) -> Defaults:
-    base = Defaults()
     return Defaults(
-        time_domain=base.time_domain,
-        effort_floor=base.effort_floor,
-        dispersion_metric=base.dispersion_metric,
-        smoothing=base.smoothing,
+        time_domain=TimeDomain(update_window_seconds=config.update_window_seconds),
+        effort_floor=EffortFloor(
+            rolling_window_ticks=config.effort_floor_ticks,
+            multiplier_alpha=config.effort_floor_multiplier,
+        ),
+        dispersion_metric=config.dispersion_metric,
+        smoothing=Smoothing(
+            dominance_alpha=config.smoothing_dominance_alpha,
+            effectiveness_alpha=config.smoothing_effectiveness_alpha,
+        ),
         effectiveness_scaling=EffectivenessScaling(tanh_k=config.tanh_k),
         input_normalization=InputNormalization(scale_window_seconds=config.scale_window_seconds),
+        persistence=Persistence(
+            enabled=config.persist_enabled,
+            input_source=config.persist_input,
+            gain_per_second=config.persist_gain_per_second,
+            input_deadband=config.persist_input_deadband,
+        ),
         effectiveness_deadband=EffectivenessDeadband(
             disp_scale_multiplier=config.disp_scale_multiplier
         ),
-        halo_dynamics=base.halo_dynamics,
-        binning=base.binning,
+        disp_scale=DispScaleConfig(
+            percentile=config.disp_scale_percentile,
+            min_samples=config.disp_scale_min_samples,
+            floor_percentile=config.disp_scale_floor_percentile,
+        ),
+        effort_scale=EffortScaleConfig(
+            percentile=config.effort_scale_percentile,
+            min_samples=config.effort_scale_min_samples,
+        ),
+        halo_dynamics=HaloDynamics(
+            growth_rate=config.halo_growth_rate,
+            decay_rate=config.halo_decay_rate,
+        ),
+        binning=Binning(
+            dot_size_thresholds=config.binning_dot_size_thresholds,
+            halo_thresholds=config.binning_halo_thresholds,
+            hysteresis_band=config.binning_hysteresis_band,
+        ),
     )
 
 
@@ -235,11 +270,17 @@ def _config_snapshot(config: AppConfig) -> dict[str, object]:
         "tbt_window_multiplier": config.tbt_window_multiplier,
         "tanh_k": config.tanh_k,
         "scale_window_seconds": config.scale_window_seconds,
+        "persist_enabled": config.persist_enabled,
+        "persist_input": config.persist_input,
+        "persist_gain_per_second": config.persist_gain_per_second,
+        "persist_input_deadband": config.persist_input_deadband,
         "disp_scale_multiplier": config.disp_scale_multiplier,
         "disp_scale_percentile": config.disp_scale_percentile,
         "disp_scale_min_samples": config.disp_scale_min_samples,
+        "disp_scale_floor_percentile": config.disp_scale_floor_percentile,
         "effort_scale_percentile": config.effort_scale_percentile,
         "effort_scale_min_samples": config.effort_scale_min_samples,
+        "spot_price_stale_switch_ticks": config.spot_price_stale_switch_ticks,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -253,16 +294,78 @@ def _config_snapshot(config: AppConfig) -> dict[str, object]:
     }
 
 
+def _effective_config_snapshot(
+    defaults: Defaults,
+    *,
+    tbt_window_multiplier: float,
+    spot_price_stale_switch_ticks: int,
+) -> dict[str, object]:
+    return {
+        "update_window_seconds": defaults.time_domain.update_window_seconds,
+        "tbt_window_multiplier": tbt_window_multiplier,
+        "tanh_k": defaults.effectiveness_scaling.tanh_k,
+        "scale_window_seconds": defaults.input_normalization.scale_window_seconds,
+        "persist_enabled": defaults.persistence.enabled,
+        "persist_input": defaults.persistence.input_source,
+        "persist_gain_per_second": defaults.persistence.gain_per_second,
+        "persist_input_deadband": defaults.persistence.input_deadband,
+        "disp_scale_multiplier": defaults.effectiveness_deadband.disp_scale_multiplier,
+        "disp_scale_percentile": defaults.disp_scale.percentile,
+        "disp_scale_min_samples": defaults.disp_scale.min_samples,
+        "disp_scale_floor_percentile": defaults.disp_scale.floor_percentile,
+        "effort_scale_percentile": defaults.effort_scale.percentile,
+        "effort_scale_min_samples": defaults.effort_scale.min_samples,
+        "spot_price_stale_switch_ticks": spot_price_stale_switch_ticks,
+        "effort_floor_multiplier": defaults.effort_floor.multiplier_alpha,
+        "effort_floor_ticks": defaults.effort_floor.rolling_window_ticks,
+        "smoothing_dominance_alpha": defaults.smoothing.dominance_alpha,
+        "smoothing_effectiveness_alpha": defaults.smoothing.effectiveness_alpha,
+        "dispersion_metric": defaults.dispersion_metric,
+        "halo_growth_rate": defaults.halo_dynamics.growth_rate,
+        "halo_decay_rate": defaults.halo_dynamics.decay_rate,
+        "binning_dot_size_thresholds": defaults.binning.dot_size_thresholds,
+        "binning_halo_thresholds": defaults.binning.halo_thresholds,
+        "binning_hysteresis_band": defaults.binning.hysteresis_band,
+    }
+
+
+def _value_matches(lhs: object, rhs: object) -> bool:
+    if isinstance(lhs, (int, float)) and isinstance(rhs, (int, float)):
+        return abs(float(lhs) - float(rhs)) <= 1e-9
+    if isinstance(lhs, tuple) and isinstance(rhs, tuple) and len(lhs) == len(rhs):
+        return all(_value_matches(lv, rv) for lv, rv in zip(lhs, rhs, strict=False))
+    return lhs == rhs
+
+
+def _verify_replay_config_parity(
+    requested: dict[str, object],
+    effective: dict[str, object],
+) -> None:
+    mismatches: list[str] = []
+    for key, expected in requested.items():
+        if key not in effective:
+            mismatches.append(f"{key}: missing in effective config")
+            continue
+        actual = effective[key]
+        if not _value_matches(expected, actual):
+            mismatches.append(f"{key}: requested={expected!r} effective={actual!r}")
+    if mismatches:
+        details = "\n  - " + "\n  - ".join(mismatches)
+        raise SystemExit("Replay config parity check failed." + details)
+
+
 def _write_meta(
     handle: TextIO,
     *,
-    config: AppConfig,
+    config_requested: dict[str, object],
+    config_effective: dict[str, object],
     replay: dict[str, object],
 ) -> None:
     payload = {
         "_meta": {
             "type": "config",
-            "config": _config_snapshot(config),
+            "config": config_effective,
+            "config_requested": config_requested,
             "replay": replay,
         }
     }
@@ -322,6 +425,11 @@ def _log_record(
         "Y_raw": state.y_raw,
         "Y_gated": state.y_gated,
         "Y": state.y,
+        "persist_raw": state.persist_raw,
+        "persist_slope": state.persist_slope,
+        "persist_sign": state.persist_sign,
+        "persist_input": state.persist_input,
+        "persist_input_value": state.persist_input_value,
         "halo_raw": state.halo_raw,
         "halo": state.halo,
         "halo_bin": state.halo_bin,
@@ -329,6 +437,12 @@ def _log_record(
         "max_source_share": state.max_source_share,
         "top_source_id": state.top_source_id,
         "top_source_effort": state.top_source_effort,
+        "persist_dt_s": state.persist_dt_s,
+        "persist_gain_per_second": state.persist_gain_per_second,
+        "persist_input_deadband": state.persist_input_deadband,
+        "persist_step_coeff": state.persist_step_coeff,
+        "persist_update_mode": state.persist_update_mode,
+        "persist_activity_flag": state.persist_activity_flag,
     }
     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
@@ -469,6 +583,13 @@ def main() -> None:
 
     config = load_app_config(args.config)
     defaults = _build_defaults(config)
+    config_requested = _config_snapshot(config)
+    config_effective = _effective_config_snapshot(
+        defaults,
+        tbt_window_multiplier=config.tbt_window_multiplier,
+        spot_price_stale_switch_ticks=config.spot_price_stale_switch_ticks,
+    )
+    _verify_replay_config_parity(config_requested, config_effective)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -527,7 +648,10 @@ def main() -> None:
         iters = [_iter_chunk_events(chunk, start_ms=start_ms, end_ms=end_ms) for chunk in selected]
         merged = _merge_event_iters(iters)
 
-        buffer = RollingEventBuffer(window_delta_ms=fallback_window_ms)
+        buffer = RollingEventBuffer(
+            window_delta_ms=fallback_window_ms,
+            spot_stale_switch_ticks=config.spot_price_stale_switch_ticks,
+        )
         engine = StateEngine(defaults)
         loop = EngineLoop(symbol=base_symbol, buffer=buffer, engine=engine)
         tbt_trackers = {"spot": TbtTracker(), "perp": TbtTracker()}
@@ -558,6 +682,7 @@ def main() -> None:
                 "end_ms": end_ms,
                 "fallback_window_ms": fallback_window_ms,
                 "update_ms": update_ms,
+                "config_parity_verified": True,
                 "scenario_id": scenario_payload.get("id") if scenario_payload else None,
                 "label": scenario_payload.get("label") if scenario_payload else None,
             }
@@ -571,7 +696,8 @@ def main() -> None:
                 )
             _write_meta(
                 handle,
-                config=config,
+                config_requested=config_requested,
+                config_effective=config_effective,
                 replay=replay_meta,
             )
             while now_ms < end_ms:

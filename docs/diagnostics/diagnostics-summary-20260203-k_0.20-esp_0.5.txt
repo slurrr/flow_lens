@@ -1,0 +1,96 @@
+source_dir: /tmp/replay_k_0.20_esp_0.5
+generated_at: 2026-02-02 23:47:14
+config:
+  update_window_seconds: 2.0
+  tbt_window_multiplier: 4.0
+  tanh_k: 0.2
+  scale_window_seconds: 420.0
+  persist_enabled: False
+  persist_input: y_gated
+  persist_gain_per_second: 0.5
+  persist_input_deadband: 0.0
+  disp_scale_multiplier: 0.25
+  disp_scale_percentile: 0.8
+  disp_scale_min_samples: 20
+  disp_scale_floor_percentile: 0.0
+  effort_scale_percentile: 0.5
+  effort_scale_min_samples: 20
+  spot_price_stale_switch_ticks: 3
+  effort_floor_multiplier: 0.2
+  effort_floor_ticks: 60
+  smoothing_dominance_alpha: 0.15
+  smoothing_effectiveness_alpha: 0.15
+  dispersion_metric: hill
+  halo_growth_rate: 0.1
+  halo_decay_rate: 0.5
+  binning_dot_size_thresholds: [0.35, 0.7]
+  binning_halo_thresholds: [0.33, 0.66]
+  binning_hysteresis_band: 0.05
+  config_source: replay_meta
+eff_rel_active_multiplier: 1.00
+
+== summary ==
+
+BTC chop (runs=1, records=358)
+scenario_duration 118s  pre_roll 600s
+p95|Y_raw| 0.689  p99|Y_raw| 0.889  Y_raw_sat 0.01  Flip Y_raw 10.84/m  Y 4.12/m  Deadband 0.34  Gate low 0.01  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 4.234  eff_rel_p95_active 7.079  k_reco_0.6 0.098  k_reco_0.7 0.123  k_reco_0.8 0.155
+|disp|/scale 0.56  E_dir persist 2  Series switch 0.00/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.40
+X mean -0.41
+
+BTC impulse (runs=1, records=386)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.771  p99|Y_raw| 0.999  Y_raw_sat 0.04  Flip Y_raw 5.81/m  Y 2.33/m  Deadband 0.64  Gate low 0.05  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 5.117  eff_rel_p95_active 8.031  k_reco_0.6 0.086  k_reco_0.7 0.108  k_reco_0.8 0.137
+|disp|/scale 0.00  E_dir persist 2  Series switch 0.00/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean 1.00
+X mean 1.00
+
+BTC trend_down (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.419  p99|Y_raw| 0.798  Y_raw_sat 0.00  Flip Y_raw 6.82/m  Y 3.41/m  Deadband 0.39  Gate low 0.00  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 2.288  eff_rel_p95_active 5.460  k_reco_0.6 0.127  k_reco_0.7 0.159  k_reco_0.8 0.201
+|disp|/scale 0.38  E_dir persist 2  Series switch 0.00/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.66
+X mean -0.66
+
+BTC trend_up (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.492  p99|Y_raw| 0.695  Y_raw_sat 0.00  Flip Y_raw 7.05/m  Y 3.26/m  Deadband 0.52  Gate low 0.00  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 2.694  eff_rel_p95_active 2.911  k_reco_0.6 0.238  k_reco_0.7 0.298  k_reco_0.8 0.377
+|disp|/scale 0.18  E_dir persist 2  Series switch 0.00/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.38
+X mean -0.38
+
+SOL chop (runs=1, records=358)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.612  p99|Y_raw| 0.961  Y_raw_sat 0.02  Flip Y_raw 8.32/m  Y 3.11/m  Deadband 0.41  Gate low 0.01  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 3.562  eff_rel_p95_active 4.713  k_reco_0.6 0.147  k_reco_0.7 0.184  k_reco_0.8 0.233
+|disp|/scale 0.50  E_dir persist 1  Series switch 0.50/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.47
+X mean -0.46
+
+SOL impulse (runs=1, records=387)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.239  p99|Y_raw| 0.599  Y_raw_sat 0.00  Flip Y_raw 2.48/m  Y 1.55/m  Deadband 0.80  Gate low 0.04  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 1.245  eff_rel_p95_active 3.454  k_reco_0.6 0.201  k_reco_0.7 0.251  k_reco_0.8 0.318
+|disp|/scale 0.00  E_dir persist 2  Series switch 9.69/m  Spot/perp switch 0.16/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.38
+X mean -0.38
+
+SOL trend_down (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.495  p99|Y_raw| 0.700  Y_raw_sat 0.00  Flip Y_raw 9.84/m  Y 4.03/m  Deadband 0.32  Gate low 0.00  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 2.716  eff_rel_p95_active 3.087  k_reco_0.6 0.225  k_reco_0.7 0.281  k_reco_0.8 0.356
+|disp|/scale 0.60  E_dir persist 2  Series switch 0.00/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.60
+X mean -0.60
+
+SOL trend_up (runs=1, records=388)
+scenario_duration 178s  pre_roll 600s
+p95|Y_raw| 0.364  p99|Y_raw| 0.805  Y_raw_sat 0.01  Flip Y_raw 5.89/m  Y 2.17/m  Deadband 0.55  Gate low 0.01  Y_raw_dir_mismatch 0.00
+p95|S| 0.000  p99|S| 0.000  max|S| 0.000  Mode b/o/h 0.00/0.00/0.00  Act 0.00  dt_p50/p90 0.00/0.00s
+eff_rel_p95_all 1.905  eff_rel_p95_active 3.221  k_reco_0.6 0.215  k_reco_0.7 0.269  k_reco_0.8 0.341
+|disp|/scale 0.11  E_dir persist 1  Series switch 0.78/m  Spot/perp switch 0.00/m  Air pocket 0.00  S_hold_max/p95 0/0s  Opp_half_p50 0s  Opp_flip_p50 0s  Opp_half_hit 0.00  X_raw mean -0.34
+X mean -0.34

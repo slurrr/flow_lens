@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 DispersionMetric = Literal["hill", "entropy"]
+PersistenceInput = Literal["y_raw", "y_gated", "y"]
 
 
 @dataclass(frozen=True)
@@ -36,8 +37,9 @@ class InputNormalization:
 @dataclass(frozen=True)
 class Persistence:
     enabled: bool = True
-    tau_build_s: float = 90.0
-    tau_decay_s: float = 20.0
+    input_source: PersistenceInput = "y_gated"
+    gain_per_second: float = 0.5
+    input_deadband: float = 0.0
 
 
 @dataclass(frozen=True)

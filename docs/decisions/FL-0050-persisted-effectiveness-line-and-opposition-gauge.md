@@ -32,5 +32,5 @@ A phased rollout reduces risk:
 
 ## Status
 
-Accepted (Phase 1), Phase 2 Conditional
-
+Superseded in part by FL-0051 (Phase 1 persistence dynamics/input).  
+Phase 2 opposition-gauge conditional status remains.

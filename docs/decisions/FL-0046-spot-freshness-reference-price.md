@@ -9,4 +9,4 @@ Reference price prefers spot only if spot has printed within the active window Î
 Stale spot prints can freeze displacement even when perp is moving. A freshness gate preserves the intent of spot preference without sacrificing responsiveness when spot is inactive.
 
 ## Status
-Accepted
+Accepted (amended by FL-0052 for stale-tick hysteresis before spotâ†’perp failover)

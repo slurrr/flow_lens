@@ -15,6 +15,7 @@ class RollingEventBuffer:
     """
 
     window_delta_ms: int
+    spot_stale_switch_ticks: int = 3
     _events: Deque[Event] = field(default_factory=deque, init=False)
     _last_price: float | None = field(default=None, init=False)
     _last_price_timestamp: int | None = field(default=None, init=False)
@@ -26,6 +27,8 @@ class RollingEventBuffer:
     _last_spot_before_timestamp: int | None = field(default=None, init=False)
     _last_perp_before_window: float | None = field(default=None, init=False)
     _last_perp_before_timestamp: int | None = field(default=None, init=False)
+    _price_series_side: str | None = field(default=None, init=False)
+    _spot_stale_tick_count: int = field(default=0, init=False)
 
     def append(self, event: Event) -> None:
         self._events.append(event)
@@ -84,15 +87,8 @@ class RollingEventBuffer:
     def window_price_range(self, now_timestamp: int) -> tuple[float | None, float | None, str]:
         spot_fresh = self._spot_fresh(now_timestamp)
         perp_fresh = self._perp_fresh(now_timestamp)
-        if spot_fresh:
-            side = "spot"
-        elif perp_fresh:
-            side = "perp"
-        elif self._last_spot_price is not None:
-            side = "spot"
-        elif self._last_perp_price is not None:
-            side = "perp"
-        else:
+        side = self._select_price_series(spot_fresh=spot_fresh, perp_fresh=perp_fresh)
+        if side is None:
             return None, None, "none"
 
         if side == "spot":
@@ -144,3 +140,40 @@ class RollingEventBuffer:
         if side_type == "spot":
             return self._last_spot_before_window
         return self._last_perp_before_window
+
+    def _select_price_series(self, *, spot_fresh: bool, perp_fresh: bool) -> str | None:
+        has_spot = self._last_spot_price is not None
+        has_perp = self._last_perp_price is not None
+        if not has_spot and not has_perp:
+            self._price_series_side = None
+            self._spot_stale_tick_count = 0
+            return None
+
+        if self._price_series_side is None:
+            self._price_series_side = "spot" if has_spot else "perp"
+            self._spot_stale_tick_count = 0
+
+        if self._price_series_side == "spot":
+            if not has_spot:
+                self._price_series_side = "perp" if has_perp else None
+                self._spot_stale_tick_count = 0
+                return self._price_series_side
+            if spot_fresh:
+                self._spot_stale_tick_count = 0
+                return "spot"
+            self._spot_stale_tick_count += 1
+            if has_perp and self._spot_stale_tick_count >= self.spot_stale_switch_ticks:
+                self._price_series_side = "perp"
+                self._spot_stale_tick_count = 0
+                return "perp"
+            return "spot"
+
+        if has_spot and spot_fresh:
+            self._price_series_side = "spot"
+            self._spot_stale_tick_count = 0
+            return "spot"
+        if not has_perp and has_spot:
+            self._price_series_side = "spot"
+            self._spot_stale_tick_count = 0
+            return "spot"
+        return "perp"

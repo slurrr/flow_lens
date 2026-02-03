@@ -30,14 +30,26 @@ class AppConfig:
     tanh_k: float
     scale_window_seconds: float
     persist_enabled: bool
-    persist_tau_build_s: float
-    persist_tau_decay_s: float
+    persist_input: Literal["y_raw", "y_gated", "y"]
+    persist_gain_per_second: float
+    persist_input_deadband: float
     disp_scale_multiplier: float
     disp_scale_percentile: float
     disp_scale_min_samples: int
     disp_scale_floor_percentile: float
     effort_scale_percentile: float
     effort_scale_min_samples: int
+    spot_price_stale_switch_ticks: int
+    tui_min_width: int
+    tui_min_height: int
+    tui_max_width: int
+    tui_max_height: int
+    tui_dot_radii: tuple[int, int, int]
+    tui_halo_radii: tuple[int, int, int]
+    tui_frame_enabled: bool
+    tui_frame_inset_px: int
+    tui_frame_band_inner: float
+    tui_frame_band_outer: float
 
 
 def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
@@ -68,14 +80,26 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     tanh_k = runtime_section.get("tanh_k", 500.0)
     scale_window_seconds = runtime_section.get("scale_window_seconds", 600.0)
     persist_enabled = runtime_section.get("persist_enabled", True)
-    persist_tau_build_s = runtime_section.get("persist_tau_build_s", 90.0)
-    persist_tau_decay_s = runtime_section.get("persist_tau_decay_s", 20.0)
+    persist_input = runtime_section.get("persist_input", "y_gated")
+    persist_gain_per_second = runtime_section.get("persist_gain_per_second", 0.5)
+    persist_input_deadband = runtime_section.get("persist_input_deadband", 0.0)
     disp_scale_multiplier = runtime_section.get("disp_scale_multiplier", 0.25)
     disp_scale_percentile = runtime_section.get("disp_scale_percentile", 0.75)
     disp_scale_min_samples = runtime_section.get("disp_scale_min_samples", 20)
     disp_scale_floor_percentile = runtime_section.get("disp_scale_floor_percentile", 0.1)
     effort_scale_percentile = runtime_section.get("effort_scale_percentile", 0.5)
     effort_scale_min_samples = runtime_section.get("effort_scale_min_samples", 20)
+    spot_price_stale_switch_ticks = runtime_section.get("spot_price_stale_switch_ticks", 3)
+    tui_min_width = runtime_section.get("tui_min_width", 41)
+    tui_min_height = runtime_section.get("tui_min_height", 17)
+    tui_max_width = runtime_section.get("tui_max_width", 81)
+    tui_max_height = runtime_section.get("tui_max_height", 33)
+    tui_dot_radii = runtime_section.get("tui_dot_radii", (1, 2, 4))
+    tui_halo_radii = runtime_section.get("tui_halo_radii", (0, 6, 9))
+    tui_frame_enabled = runtime_section.get("tui_frame_enabled", True)
+    tui_frame_inset_px = runtime_section.get("tui_frame_inset_px", 1)
+    tui_frame_band_inner = runtime_section.get("tui_frame_band_inner", 0.995)
+    tui_frame_band_outer = runtime_section.get("tui_frame_band_outer", 1.005)
     if not isinstance(tbt_window_multiplier, (int, float)):
         raise ValueError("runtime.tbt_window_multiplier must be a number.")
     if not isinstance(update_window_seconds, (int, float)):
@@ -102,14 +126,18 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.scale_window_seconds must be a number.")
     if not isinstance(persist_enabled, bool):
         raise ValueError("runtime.persist_enabled must be a boolean.")
-    if not isinstance(persist_tau_build_s, (int, float)):
-        raise ValueError("runtime.persist_tau_build_s must be a number.")
-    if not isinstance(persist_tau_decay_s, (int, float)):
-        raise ValueError("runtime.persist_tau_decay_s must be a number.")
-    if float(persist_tau_build_s) <= 0:
-        raise ValueError("runtime.persist_tau_build_s must be > 0.")
-    if float(persist_tau_decay_s) <= 0:
-        raise ValueError("runtime.persist_tau_decay_s must be > 0.")
+    if not isinstance(persist_input, str):
+        raise ValueError("runtime.persist_input must be a string.")
+    if persist_input not in {"y_raw", "y_gated", "y"}:
+        raise ValueError("runtime.persist_input must be one of: y_raw, y_gated, y.")
+    if not isinstance(persist_gain_per_second, (int, float)):
+        raise ValueError("runtime.persist_gain_per_second must be a number.")
+    if float(persist_gain_per_second) <= 0:
+        raise ValueError("runtime.persist_gain_per_second must be > 0.")
+    if not isinstance(persist_input_deadband, (int, float)):
+        raise ValueError("runtime.persist_input_deadband must be a number.")
+    if float(persist_input_deadband) < 0:
+        raise ValueError("runtime.persist_input_deadband must be >= 0.")
     if not isinstance(disp_scale_multiplier, (int, float)):
         raise ValueError("runtime.disp_scale_multiplier must be a number.")
     if not isinstance(disp_scale_percentile, (int, float)):
@@ -128,10 +156,42 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.effort_scale_percentile must be a number.")
     if not isinstance(effort_scale_min_samples, int):
         raise ValueError("runtime.effort_scale_min_samples must be an integer.")
+    if not isinstance(spot_price_stale_switch_ticks, int):
+        raise ValueError("runtime.spot_price_stale_switch_ticks must be an integer.")
     if effort_scale_percentile <= 0 or effort_scale_percentile >= 1:
         raise ValueError("runtime.effort_scale_percentile must be between 0 and 1.")
     if effort_scale_min_samples <= 0:
         raise ValueError("runtime.effort_scale_min_samples must be > 0.")
+    if spot_price_stale_switch_ticks <= 0:
+        raise ValueError("runtime.spot_price_stale_switch_ticks must be > 0.")
+    if not isinstance(tui_min_width, int):
+        raise ValueError("runtime.tui_min_width must be an integer.")
+    if not isinstance(tui_min_height, int):
+        raise ValueError("runtime.tui_min_height must be an integer.")
+    if not isinstance(tui_max_width, int):
+        raise ValueError("runtime.tui_max_width must be an integer.")
+    if not isinstance(tui_max_height, int):
+        raise ValueError("runtime.tui_max_height must be an integer.")
+    if tui_min_width < 15 or tui_min_height < 9:
+        raise ValueError("runtime tui minimum dimensions are too small.")
+    if tui_max_width < tui_min_width or tui_max_height < tui_min_height:
+        raise ValueError("runtime tui max dimensions must be >= min dimensions.")
+    dot_radii = _parse_int_triplet(tui_dot_radii, "runtime.tui_dot_radii")
+    halo_radii = _parse_int_triplet(tui_halo_radii, "runtime.tui_halo_radii")
+    if not isinstance(tui_frame_enabled, bool):
+        raise ValueError("runtime.tui_frame_enabled must be a boolean.")
+    if not isinstance(tui_frame_inset_px, int):
+        raise ValueError("runtime.tui_frame_inset_px must be an integer.")
+    if tui_frame_inset_px < 0:
+        raise ValueError("runtime.tui_frame_inset_px must be >= 0.")
+    if not isinstance(tui_frame_band_inner, (int, float)):
+        raise ValueError("runtime.tui_frame_band_inner must be a number.")
+    if not isinstance(tui_frame_band_outer, (int, float)):
+        raise ValueError("runtime.tui_frame_band_outer must be a number.")
+    if float(tui_frame_band_inner) <= 0:
+        raise ValueError("runtime.tui_frame_band_inner must be > 0.")
+    if float(tui_frame_band_outer) <= float(tui_frame_band_inner):
+        raise ValueError("runtime.tui_frame_band_outer must be > runtime.tui_frame_band_inner.")
 
     dot_thresholds = _parse_thresholds(
         binning_dot_size_thresholds, "runtime.binning_dot_size_thresholds"
@@ -177,14 +237,26 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         tanh_k=float(tanh_k),
         scale_window_seconds=float(scale_window_seconds),
         persist_enabled=bool(persist_enabled),
-        persist_tau_build_s=float(persist_tau_build_s),
-        persist_tau_decay_s=float(persist_tau_decay_s),
+        persist_input=cast(Literal["y_raw", "y_gated", "y"], persist_input),
+        persist_gain_per_second=float(persist_gain_per_second),
+        persist_input_deadband=float(persist_input_deadband),
         disp_scale_multiplier=float(disp_scale_multiplier),
         disp_scale_percentile=float(disp_scale_percentile),
         disp_scale_min_samples=int(disp_scale_min_samples),
         disp_scale_floor_percentile=float(disp_scale_floor_percentile),
         effort_scale_percentile=float(effort_scale_percentile),
         effort_scale_min_samples=int(effort_scale_min_samples),
+        spot_price_stale_switch_ticks=int(spot_price_stale_switch_ticks),
+        tui_min_width=int(tui_min_width),
+        tui_min_height=int(tui_min_height),
+        tui_max_width=int(tui_max_width),
+        tui_max_height=int(tui_max_height),
+        tui_dot_radii=dot_radii,
+        tui_halo_radii=halo_radii,
+        tui_frame_enabled=bool(tui_frame_enabled),
+        tui_frame_inset_px=int(tui_frame_inset_px),
+        tui_frame_band_inner=float(tui_frame_band_inner),
+        tui_frame_band_outer=float(tui_frame_band_outer),
     )
 
 
@@ -199,3 +271,14 @@ def _parse_thresholds(value: object, label: str) -> tuple[float, float]:
     if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
         raise ValueError(f"{label} must contain numeric values.")
     return float(low), float(high)
+
+
+def _parse_int_triplet(value: object, label: str) -> tuple[int, int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(f"{label} must be a list of three integers.")
+    v0, v1, v2 = value
+    if not isinstance(v0, int) or not isinstance(v1, int) or not isinstance(v2, int):
+        raise ValueError(f"{label} values must be integers.")
+    if v0 < 0 or v1 < 0 or v2 < 0:
+        raise ValueError(f"{label} values must be >= 0.")
+    return v0, v1, v2

@@ -2,8 +2,11 @@
 
 Flow Lens is a **market structure diagnostic lens** for crypto trading.
 
-It does **not** produce signals, scores, alerts, or trade advice.  
-It visualizes **flow physics**: who is pushing and whether that effort is working.
+This system converts raw spot and perp participation data into a normalized, source-agnostic state model that reveals who is in control of price and whether their effort is being accepted or absorbed.
+
+It does **not** produce signals, scores, or alerts.  
+It visualizes **flow physics**: who is pushing and whether that effort is working.  
+It renders in a way that gives users **deep insites** into the current **liquidity structure**, designed to help make better trading decisions during different **liquidity regimes**.
 
 This document explains how to contribute without breaking the system’s core semantics.
 

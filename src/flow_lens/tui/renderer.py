@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+import time
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
@@ -12,8 +13,25 @@ CursesWindow: TypeAlias = Any
 
 @dataclass(frozen=True)
 class RendererConfig:
-    width: int = 49
-    height: int = 21
+    # Lens box dimensions in terminal cells (odd numbers center axes cleanly).
+    min_width: int = 41
+    min_height: int = 17
+    max_width: int = 81
+    max_height: int = 33
+
+    # Dot size bins (small, medium, large) as Braille-pixel radii.
+    dot_radii: tuple[int, int, int] = (1, 2, 4)
+
+    # Halo size bins (none, medium, large) as Braille-pixel radii.
+    halo_radii: tuple[int, int, int] = (0, 6, 9)
+
+    # Circular frame controls.
+    frame_enabled: bool = True
+    frame_inset_px: int = 1
+    frame_band_inner: float = 0.995
+    frame_band_outer: float = 1.005
+    axis_flash_duration_s: float = 0.25
+    axis_flash_cooldown_s: float = 0.75
 
 
 class Renderer:
@@ -22,6 +40,9 @@ class Renderer:
         self._colors_ready = False
         self._last_y: float | None = None
         self._last_state_id: int | None = None
+        self._axis_flash_sign: int = 0
+        self._axis_flash_until: float = 0.0
+        self._axis_flash_cooldown_until: float = 0.0
 
     def draw(
         self,
@@ -39,33 +60,73 @@ class Renderer:
     ) -> None:
         stdscr.erase()
         maxy, maxx = stdscr.getmaxyx()
+        if maxx <= 1 or maxy <= 1:
+            return
 
         header = symbol if not search_mode else f"{symbol}   /{search_buffer}"
         self._draw_header(stdscr, header, maxx, row=0)
 
         map_top = 2
-        map_left = max(0, (maxx - self._config.width) // 2)
-        if map_top + self._config.height + 1 >= maxy:
+        map_width, map_height = _dynamic_map_size(
+            maxx,
+            maxy,
+            min_width=self._config.min_width,
+            min_height=self._config.min_height,
+            max_width=self._config.max_width,
+            max_height=self._config.max_height,
+        )
+        map_left = max(0, (maxx - map_width) // 2)
+        if map_top + map_height + 1 >= maxy:
             map_left = 0
 
-        map_right = map_left + self._config.width - 1
-        map_bottom = map_top + self._config.height - 1
+        map_right = map_left + map_width - 1
+        map_bottom = map_top + map_height - 1
 
-        self._draw_axes(stdscr, map_top, map_left)
+        self._draw_axes_overlay(stdscr, map_top, map_left, map_width, map_height)
+        self._draw_lens(
+            stdscr,
+            state=state,
+            map_top=map_top,
+            map_left=map_left,
+            map_width=map_width,
+            map_height=map_height,
+            maxx=maxx,
+            maxy=maxy,
+        )
+        # Re-apply solid axes so persistence/halo never erase axis continuity.
+        self._draw_axes_overlay(stdscr, map_top, map_left, map_width, map_height)
+        if state is not None:
+            # Dot is re-drawn last so it remains visible even when on the axes.
+            self._draw_dot_overlay(
+                stdscr,
+                state,
+                map_top,
+                map_left,
+                map_width,
+                map_height,
+                maxx,
+                maxy,
+            )
 
         if state is None:
             self._last_y = None
             self._last_state_id = None
+            self._axis_flash_sign = 0
+            self._axis_flash_until = 0.0
+            self._axis_flash_cooldown_until = 0.0
             self._draw_labels(
                 stdscr,
                 map_top,
                 map_left,
                 map_right,
                 map_bottom,
+                map_width,
+                map_height,
                 maxy,
                 maxx,
                 status_spot=status_spot,
                 status_perp=status_perp,
+                axis_flash_sign=0,
             )
             stdscr.refresh()
             return
@@ -74,6 +135,7 @@ class Renderer:
         if is_new_update:
             self._last_y = state.y
             self._last_state_id = id(state)
+            self._maybe_trigger_axis_flash(_sign_value(state.disp))
 
         self._draw_labels(
             stdscr,
@@ -81,21 +143,14 @@ class Renderer:
             map_left,
             map_right,
             map_bottom,
+            map_width,
+            map_height,
             maxy,
             maxx,
             status_spot=status_spot,
             status_perp=status_perp,
+            axis_flash_sign=self._axis_flash_sign if self._axis_flash_active() else 0,
         )
-
-        self._draw_persistence_line(stdscr, state, map_top, map_left, map_right, maxx, maxy)
-
-        base_x, base_y = _norm_to_grid(state.x, state.y, self._config.width, self._config.height)
-        base_x += map_left
-        base_y += map_top
-
-        dot_x, dot_y = _apply_lean_offset(base_x, base_y, state.lean)
-        self._draw_halo(stdscr, dot_x, dot_y, state.halo_bin, map_left, map_top, maxx, maxy)
-        self._draw_dot(stdscr, dot_x, dot_y, state.size_bin, maxx, maxy)
 
         self._draw_status_bar(
             stdscr,
@@ -123,7 +178,7 @@ class Renderer:
     ) -> None:
         if row >= stdscr.getmaxyx()[0]:
             return
-        stdscr.addstr(row, 0, header[: maxx - 1])
+        _safe_addstr(stdscr, row, 0, header[: maxx - 1])
 
     def _draw_status_bar(
         self,
@@ -161,14 +216,14 @@ class Renderer:
         if x0 < 0:
             x0 = 0
 
-        stdscr.addstr(top, x0, "┌" + "─" * inner_width + "┐")
+        _safe_addstr(stdscr, top, x0, "┌" + "─" * inner_width + "┐")
         for idx, line in enumerate(lines, start=1):
-            stdscr.addstr(top + idx, x0, "│")
+            _safe_addstr(stdscr, top + idx, x0, "│")
             _addstr_limited(
                 stdscr, top + idx, x0 + 1, line, x0 + 1 + inner_width
             )
-            stdscr.addstr(top + idx, x0 + inner_width + 1, "│")
-        stdscr.addstr(bottom, x0, "└" + "─" * inner_width + "┘")
+            _safe_addstr(stdscr, top + idx, x0 + inner_width + 1, "│")
+        _safe_addstr(stdscr, bottom, x0, "└" + "─" * inner_width + "┘")
 
     def _ensure_colors(self) -> None:
         if self._colors_ready:
@@ -189,11 +244,14 @@ class Renderer:
         map_left: int,
         map_right: int,
         map_bottom: int,
+        map_width: int,
+        map_height: int,
         maxy: int,
         maxx: int,
         *,
         status_spot: AdapterStatus | None,
         status_perp: AdapterStatus | None,
+        axis_flash_sign: int,
     ) -> None:
         top = "ACCEPTING"
         bot = "REJECTING"
@@ -202,116 +260,179 @@ class Renderer:
 
         spot_attr = 0
         perp_attr = 0
+        axis_attr = 0
         if curses.has_colors():
             self._ensure_colors()
             if status_spot is not None:
                 spot_attr = curses.color_pair(_status_color(status_spot))
             if status_perp is not None:
                 perp_attr = curses.color_pair(_status_color(status_perp))
+            if axis_flash_sign > 0:
+                axis_attr = curses.color_pair(1)
+            elif axis_flash_sign < 0:
+                axis_attr = curses.color_pair(3)
 
-        tx = map_left + max(0, (self._config.width - len(top)) // 2)
+        tx = map_left + max(0, (map_width - len(top)) // 2)
         if map_top - 1 >= 1 and tx + len(top) < maxx:
-            stdscr.addstr(map_top - 1, tx, top)
+            _safe_addstr(stdscr, map_top - 1, tx, top, attr=axis_attr)
 
-        bx = map_left + max(0, (self._config.width - len(bot)) // 2)
+        bx = map_left + max(0, (map_width - len(bot)) // 2)
         if map_bottom + 1 < maxy and bx + len(bot) < maxx:
-            stdscr.addstr(map_bottom + 1, bx, bot)
+            _safe_addstr(stdscr, map_bottom + 1, bx, bot, attr=axis_attr)
 
-        if map_left - len(left) - 1 >= 0 and map_top + self._config.height // 2 < maxy:
+        if map_left - len(left) - 1 >= 0 and map_top + map_height // 2 < maxy:
             if perp_attr:
-                stdscr.addstr(
-                    map_top + self._config.height // 2,
+                _safe_addstr(
+                    stdscr,
+                    map_top + map_height // 2,
                     map_left - len(left) - 1,
                     left,
-                    perp_attr,
+                    attr=perp_attr,
                 )
             else:
-                stdscr.addstr(
-                    map_top + self._config.height // 2, map_left - len(left) - 1, left
-                )
+                _safe_addstr(stdscr, map_top + map_height // 2, map_left - len(left) - 1, left)
 
-        if map_right + 2 + len(right) < maxx and map_top + self._config.height // 2 < maxy:
+        if map_right + 2 + len(right) < maxx and map_top + map_height // 2 < maxy:
             if spot_attr:
-                stdscr.addstr(
-                    map_top + self._config.height // 2, map_right + 2, right, spot_attr
+                _safe_addstr(
+                    stdscr,
+                    map_top + map_height // 2,
+                    map_right + 2,
+                    right,
+                    attr=spot_attr,
                 )
             else:
-                stdscr.addstr(map_top + self._config.height // 2, map_right + 2, right)
+                _safe_addstr(stdscr, map_top + map_height // 2, map_right + 2, right)
 
-    def _draw_axes(self, stdscr: CursesWindow, map_top: int, map_left: int) -> None:
-        cx = self._config.width // 2
-        cy = self._config.height // 2
-
-        for x in range(self._config.width):
-            ch = "─" if x != cx else "┼"
-            stdscr.addstr(map_top + cy, map_left + x, ch)
-        for y in range(self._config.height):
-            ch = "│" if y != cy else "┼"
-            stdscr.addstr(map_top + y, map_left + cx, ch)
-
-    def _draw_dot(
-        self,
-        stdscr: CursesWindow,
-        x: int,
-        y: int,
-        size_bin: int,
-        maxx: int,
-        maxy: int,
-    ) -> None:
-        if not _in_bounds(x, y, maxx, maxy):
+    def _maybe_trigger_axis_flash(self, disp_sign: int) -> None:
+        if disp_sign == 0:
             return
-        if size_bin >= 2:
-            stdscr.addstr(y, x, _dot_char(size_bin), curses.A_BOLD)
-        else:
-            stdscr.addstr(y, x, _dot_char(size_bin))
+        now = time.monotonic()
+        if now < self._axis_flash_cooldown_until and disp_sign == self._axis_flash_sign:
+            return
+        self._axis_flash_sign = disp_sign
+        self._axis_flash_until = now + max(0.0, self._config.axis_flash_duration_s)
+        self._axis_flash_cooldown_until = now + max(0.0, self._config.axis_flash_cooldown_s)
 
-    def _draw_halo(
+    def _axis_flash_active(self) -> bool:
+        if self._axis_flash_sign == 0:
+            return False
+        return time.monotonic() <= self._axis_flash_until
+
+    def _draw_lens(
         self,
         stdscr: CursesWindow,
-        x: int,
-        y: int,
-        halo_bin: int,
-        map_left: int,
+        *,
+        state: StateSnapshot | None,
         map_top: int,
+        map_left: int,
+        map_width: int,
+        map_height: int,
         maxx: int,
         maxy: int,
     ) -> None:
-        radius = _halo_radius(halo_bin)
-        if radius == 0:
-            return
+        canvas = _BrailleCanvas(map_width, map_height)
+        center_x = canvas.width_px // 2
+        center_y = canvas.height_px // 2
+        if self._config.frame_enabled:
+            _draw_ellipse_ring(
+                canvas,
+                center_x=center_x,
+                center_y=center_y,
+                radius_x=max(1, center_x - self._config.frame_inset_px),
+                radius_y=max(1, center_y - self._config.frame_inset_px),
+                band_inner=self._config.frame_band_inner,
+                band_outer=self._config.frame_band_outer,
+            )
 
-        offsets = _ring_offsets(radius)
-        for dx, dy in offsets:
-            cx = x + dx
-            cy = y + dy
-            if not _in_bounds(cx, cy, maxx, maxy):
-                continue
-            if cx < map_left or cy < map_top:
-                continue
-            stdscr.addstr(cy, cx, ".")
+        if state is not None:
+            if state.persist_enabled:
+                _, persist_y = _norm_to_braille(0.0, state.persist_raw, map_width, map_height)
+                if persist_y != center_y:
+                    # Preserve the solid vertical axis cell so line and axis remain distinct.
+                    canvas.draw_hline(
+                        persist_y,
+                        step=2,
+                        skip_x_min=center_x - 1,
+                        skip_x_max=center_x,
+                    )
 
-    def _draw_persistence_line(
+            dot_cell_x, dot_cell_y = _norm_to_grid(state.x, state.y, map_width, map_height)
+            dot_cell_x, dot_cell_y = _apply_lean_offset(dot_cell_x, dot_cell_y, state.lean)
+            dot_x = _clamp(dot_cell_x * 2 + 1, 0, canvas.width_px - 1)
+            dot_y = _clamp(dot_cell_y * 4 + 1, 0, canvas.height_px - 1)
+            _draw_halo(canvas, dot_x, dot_y, state.halo_bin, self._config.halo_radii)
+            _draw_dot(canvas, dot_x, dot_y, state.size_bin, self._config.dot_radii)
+
+        canvas.blit(stdscr, map_top, map_left, maxx, maxy)
+
+    def _draw_axes_overlay(
+        self,
+        stdscr: CursesWindow,
+        map_top: int,
+        map_left: int,
+        map_width: int,
+        map_height: int,
+    ) -> None:
+        center_x = map_left + map_width // 2
+        center_y = map_top + map_height // 2
+
+        for x in range(map_left, map_left + map_width):
+            ch = "┼" if x == center_x else "─"
+            _safe_addstr(stdscr, center_y, x, ch)
+        for y in range(map_top, map_top + map_height):
+            ch = "┼" if y == center_y else "│"
+            _safe_addstr(stdscr, y, center_x, ch)
+
+    def _draw_dot_overlay(
         self,
         stdscr: CursesWindow,
         state: StateSnapshot,
         map_top: int,
         map_left: int,
-        map_right: int,
+        map_width: int,
+        map_height: int,
         maxx: int,
         maxy: int,
     ) -> None:
-        if not state.persist_enabled:
-            return
-        _, grid_y = _norm_to_grid(0.0, state.persist_raw, self._config.width, self._config.height)
-        y = map_top + grid_y
-        center_y = map_top + self._config.height // 2
-        if y == center_y or not _in_bounds(map_left, y, maxx, maxy):
-            return
-        for x in range(map_left, map_right + 1):
-            if not _in_bounds(x, y, maxx, maxy):
-                continue
-            if (x - map_left) % 2 == 1:
-                stdscr.addstr(y, x, "·")
+        canvas = _BrailleCanvas(map_width, map_height)
+        dot_cell_x, dot_cell_y = _norm_to_grid(state.x, state.y, map_width, map_height)
+        dot_cell_x, dot_cell_y = _apply_lean_offset(dot_cell_x, dot_cell_y, state.lean)
+        dot_x = _clamp(dot_cell_x * 2 + 1, 0, canvas.width_px - 1)
+        dot_y = _clamp(dot_cell_y * 4 + 1, 0, canvas.height_px - 1)
+        _draw_dot(canvas, dot_x, dot_y, state.size_bin, self._config.dot_radii)
+        canvas.blit(stdscr, map_top, map_left, maxx, maxy)
+
+
+def _dynamic_map_size(
+    maxx: int,
+    maxy: int,
+    *,
+    min_width: int,
+    min_height: int,
+    max_width: int,
+    max_height: int,
+) -> tuple[int, int]:
+    # Keep side labels and a margin visible.
+    available_width = maxx - 12
+    # Keep vertical room for labels and the status box below the lens.
+    available_height = maxy - 11
+    width = _choose_odd_size(min_width, min(max_width, available_width), floor=25)
+    height = _choose_odd_size(min_height, min(max_height, available_height), floor=15)
+    return width, height
+
+
+def _choose_odd_size(minimum: int, available: int, *, floor: int) -> int:
+    del floor
+    if available <= 0:
+        return 1
+    max_odd = available if available % 2 == 1 else available - 1
+    if max_odd <= 0:
+        return 1
+    if max_odd < minimum:
+        return max_odd
+    return max(minimum, max_odd)
+
 
 def _norm_to_grid(xn: float, yn: float, width: int, height: int) -> tuple[int, int]:
     cx = width // 2
@@ -321,12 +442,12 @@ def _norm_to_grid(xn: float, yn: float, width: int, height: int) -> tuple[int, i
     return _clamp(gx, 0, width - 1), _clamp(gy, 0, height - 1)
 
 
-def _dot_char(size_bin: int) -> str:
-    if size_bin <= 0:
-        return "·"
-    if size_bin == 1:
-        return "◉"
-    return "⬤"
+def _norm_to_braille(xn: float, yn: float, width: int, height: int) -> tuple[int, int]:
+    width_px = width * 2
+    height_px = height * 4
+    x = int(round(((xn + 1.0) / 2.0) * (width_px - 1)))
+    y = int(round(((1.0 - yn) / 2.0) * (height_px - 1)))
+    return _clamp(x, 0, width_px - 1), _clamp(y, 0, height_px - 1)
 
 
 def _status_color(status: AdapterStatus) -> int:
@@ -482,6 +603,14 @@ def _fmt_int(value: int | None) -> str:
     return str(value)
 
 
+def _sign_value(value: float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
+
+
 def _addstr_limited(
     stdscr: CursesWindow, y: int, x: int, text: str, maxx: int, attr: int = 0
 ) -> int:
@@ -492,52 +621,143 @@ def _addstr_limited(
         return x
     chunk = text[:available]
     if attr:
-        stdscr.addstr(y, x, chunk, attr)
+        _safe_addstr(stdscr, y, x, chunk, attr=attr)
     else:
-        stdscr.addstr(y, x, chunk)
+        _safe_addstr(stdscr, y, x, chunk)
     return x + len(chunk)
 
 
-def _halo_radius(halo_bin: int) -> int:
+class _BrailleCanvas:
+    _LEFT_BITS = (0x01, 0x02, 0x04, 0x40)
+    _RIGHT_BITS = (0x08, 0x10, 0x20, 0x80)
+
+    def __init__(self, width_cells: int, height_cells: int) -> None:
+        self.width_cells = width_cells
+        self.height_cells = height_cells
+        self.width_px = width_cells * 2
+        self.height_px = height_cells * 4
+        self._cells: list[list[int]] = [
+            [0 for _ in range(width_cells)] for _ in range(height_cells)
+        ]
+
+    def set_px(self, x: int, y: int) -> None:
+        if x < 0 or x >= self.width_px or y < 0 or y >= self.height_px:
+            return
+        cell_x = x // 2
+        cell_y = y // 4
+        sub_x = x % 2
+        sub_y = y % 4
+        bit = self._LEFT_BITS[sub_y] if sub_x == 0 else self._RIGHT_BITS[sub_y]
+        self._cells[cell_y][cell_x] |= bit
+
+    def draw_hline(
+        self,
+        y: int,
+        *,
+        step: int = 1,
+        skip_x_min: int | None = None,
+        skip_x_max: int | None = None,
+    ) -> None:
+        if y < 0 or y >= self.height_px:
+            return
+        for x in range(0, self.width_px, max(1, step)):
+            if (
+                skip_x_min is not None
+                and skip_x_max is not None
+                and skip_x_min <= x <= skip_x_max
+            ):
+                continue
+            self.set_px(x, y)
+
+    def draw_vline(self, x: int, *, step: int = 1) -> None:
+        if x < 0 or x >= self.width_px:
+            return
+        for y in range(0, self.height_px, max(1, step)):
+            self.set_px(x, y)
+
+    def blit(self, stdscr: CursesWindow, top: int, left: int, maxx: int, maxy: int) -> None:
+        for row, masks in enumerate(self._cells):
+            y = top + row
+            if y < 0 or y >= maxy:
+                continue
+            for col, mask in enumerate(masks):
+                if mask == 0:
+                    continue
+                x = left + col
+                if x < 0 or x >= maxx - 1:
+                    continue
+                _safe_addstr(stdscr, y, x, chr(0x2800 + mask))
+
+
+def _draw_dot(
+    canvas: _BrailleCanvas,
+    center_x: int,
+    center_y: int,
+    size_bin: int,
+    dot_radii: tuple[int, int, int],
+) -> None:
+    radius = dot_radii[_clamp(size_bin, 0, 2)]
+    _draw_disk(canvas, center_x, center_y, radius)
+
+
+def _draw_halo(
+    canvas: _BrailleCanvas,
+    center_x: int,
+    center_y: int,
+    halo_bin: int,
+    halo_radii: tuple[int, int, int],
+) -> None:
     if halo_bin <= 0:
-        return 0
-    if halo_bin == 1:
-        return 1
-    return 2
+        return
+    radius = halo_radii[_clamp(halo_bin, 0, 2)]
+    _draw_ring(canvas, center_x, center_y, radius)
 
 
-def _ring_offsets(radius: int) -> list[tuple[int, int]]:
-    if radius == 1:
-        return [
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        ]
-    if radius == 2:
-        return [
-            (-2, -2),
-            (-1, -2),
-            (0, -2),
-            (1, -2),
-            (2, -2),
-            (-2, -1),
-            (2, -1),
-            (-2, 0),
-            (2, 0),
-            (-2, 1),
-            (2, 1),
-            (-2, 2),
-            (-1, 2),
-            (0, 2),
-            (1, 2),
-            (2, 2),
-        ]
-    return []
+def _draw_disk(canvas: _BrailleCanvas, center_x: int, center_y: int, radius: int) -> None:
+    if radius <= 0:
+        canvas.set_px(center_x, center_y)
+        return
+    r2 = radius * radius
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dx * dx + dy * dy <= r2:
+                canvas.set_px(center_x + dx, center_y + dy)
+
+
+def _draw_ring(canvas: _BrailleCanvas, center_x: int, center_y: int, radius: int) -> None:
+    if radius <= 0:
+        return
+    inner = (radius - 0.75) * (radius - 0.75)
+    outer = (radius + 0.75) * (radius + 0.75)
+    span = radius + 1
+    for dy in range(-span, span + 1):
+        for dx in range(-span, span + 1):
+            dist2 = float(dx * dx + dy * dy)
+            if inner <= dist2 <= outer:
+                canvas.set_px(center_x + dx, center_y + dy)
+
+
+def _draw_ellipse_ring(
+    canvas: _BrailleCanvas,
+    *,
+    center_x: int,
+    center_y: int,
+    radius_x: int,
+    radius_y: int,
+    band_inner: float,
+    band_outer: float,
+) -> None:
+    if radius_x <= 0 or radius_y <= 0:
+        return
+    inner = band_inner
+    outer = band_outer
+    for dy in range(-radius_y - 1, radius_y + 2):
+        for dx in range(-radius_x - 1, radius_x + 2):
+            nx = dx / radius_x
+            ny = dy / radius_y
+            dist = nx * nx + ny * ny
+            if inner <= dist <= outer:
+                canvas.set_px(center_x + dx, center_y + dy)
 
 
 def _apply_lean_offset(
@@ -561,3 +781,20 @@ def _clamp(value: int, lower: int, upper: int) -> int:
     if value > upper:
         return upper
     return value
+
+
+def _safe_addstr(
+    stdscr: CursesWindow,
+    y: int,
+    x: int,
+    text: str,
+    *,
+    attr: int = 0,
+) -> None:
+    try:
+        if attr:
+            stdscr.addstr(y, x, text, attr)
+        else:
+            stdscr.addstr(y, x, text)
+    except curses.error:
+        pass

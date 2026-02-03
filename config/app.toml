@@ -24,6 +24,7 @@ symbols = [
   "BNB",
   "BTC",
   "ETH",
+  "HYPE",
 ]
 
 [adapters.binance_perp]
@@ -52,7 +53,7 @@ symbols = [
   "BNB",
   "BTC",
   "ETH",
-  
+  "HYPE",
 ]
 
 [runtime]
@@ -70,21 +71,48 @@ binning_dot_size_thresholds = [0.35, 0.70]
 binning_halo_thresholds = [0.33, 0.66]
 binning_hysteresis_band = 0.05
 
-tanh_k = 0.16
+tanh_k = 0.30
 
 scale_window_seconds = 420.0
 
 persist_enabled = true
-persist_tau_build_s = 90.0
-persist_tau_decay_s = 20.0
+persist_input = "y_gated"
+# Phase 1 (M1): no quiet-time decay; opposing signed input unwinds persistence.
+persist_gain_per_second = 0.03
+persist_input_deadband = 0.0
 
-disp_scale_multiplier = 0.08    # deadband try .15 - .2
-disp_scale_percentile = 0.45
+disp_scale_multiplier = 0.10    # deadband try .15 - .2
+disp_scale_percentile = 0.80
 disp_scale_min_samples = 20
-disp_scale_floor_percentile = 0.10
+disp_scale_floor_percentile = 0.0
 
-effort_scale_percentile = 0.8
+effort_scale_percentile = 0.5
 effort_scale_min_samples = 20
 
-effort_floor_multiplier = 0.30    # 0.15
+effort_floor_multiplier = 0.2    # 0.15
 effort_floor_ticks = 60
+
+# Keep spot selected through short quiet patches; with 2s ticks, 3 ~= 6s hold.
+spot_price_stale_switch_ticks = 3
+
+# ---- TUI styling (Braille lens) ----
+# Lens box size bounds in terminal cells (odd values center axes cleanly).
+# Reasonable ranges: min 31-61, max 61-101 depending on terminal footprint.
+tui_min_width = 41
+tui_min_height = 17
+tui_max_width = 81
+tui_max_height = 33
+
+# Dot radii for size bins [small, medium, large], in Braille pixels.
+# Reasonable ranges: 0-6. Keep ascending.
+tui_dot_radii = [1, 2, 4]
+
+# Halo radii for halo bins [none, medium, large], in Braille pixels.
+# Reasonable ranges: 0-14 depending on lens size. Keep ascending.
+tui_halo_radii = [0, 6, 9]
+
+# Circular frame controls.
+tui_frame_enabled = true
+tui_frame_inset_px = 0          # 0 touches edges; higher pulls inward
+tui_frame_band_inner = 0.995    # smaller => thicker 0.995
+tui_frame_band_outer = 1.01    # larger => thicker 1.005

@@ -96,8 +96,9 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         ),
         persistence=Persistence(
             enabled=config.persist_enabled,
-            tau_build_s=config.persist_tau_build_s,
-            tau_decay_s=config.persist_tau_decay_s,
+            input_source=config.persist_input,
+            gain_per_second=config.persist_gain_per_second,
+            input_deadband=config.persist_input_deadband,
         ),
         effectiveness_deadband=EffectivenessDeadband(
             disp_scale_multiplier=config.disp_scale_multiplier,
@@ -124,28 +125,35 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     logging.info(
         "Runtime config: update_window_seconds=%.3f tbt_window_multiplier=%.3f "
         "tanh_k=%.3f scale_window_seconds=%.3f "
-        "persist_enabled=%s persist_tau_build_s=%.3f persist_tau_decay_s=%.3f "
+        "persist_enabled=%s persist_input=%s persist_gain_per_second=%.3f "
+        "persist_input_deadband=%.3f "
         "disp_scale_multiplier=%.3f "
         "disp_scale_percentile=%.3f disp_scale_min_samples=%d disp_scale_floor_percentile=%.3f "
         "effort_scale_percentile=%.3f effort_scale_min_samples=%d "
+        "spot_price_stale_switch_ticks=%d "
         "effort_floor_multiplier=%.3f effort_floor_ticks=%d "
         "smoothing_dominance_alpha=%.3f smoothing_effectiveness_alpha=%.3f "
         "dispersion_metric=%s halo_growth_rate=%.3f halo_decay_rate=%.3f "
         "binning_dot_size_thresholds=%s binning_halo_thresholds=%s "
-        "binning_hysteresis_band=%.3f",
+        "binning_hysteresis_band=%.3f "
+        "tui_min_width=%d tui_min_height=%d tui_max_width=%d tui_max_height=%d "
+        "tui_dot_radii=%s tui_halo_radii=%s tui_frame_enabled=%s "
+        "tui_frame_inset_px=%d tui_frame_band_inner=%.5f tui_frame_band_outer=%.5f",
         config.update_window_seconds,
         config.tbt_window_multiplier,
         config.tanh_k,
         config.scale_window_seconds,
         config.persist_enabled,
-        config.persist_tau_build_s,
-        config.persist_tau_decay_s,
+        config.persist_input,
+        config.persist_gain_per_second,
+        config.persist_input_deadband,
         config.disp_scale_multiplier,
         config.disp_scale_percentile,
         config.disp_scale_min_samples,
         config.disp_scale_floor_percentile,
         config.effort_scale_percentile,
         config.effort_scale_min_samples,
+        config.spot_price_stale_switch_ticks,
         config.effort_floor_multiplier,
         config.effort_floor_ticks,
         config.smoothing_dominance_alpha,
@@ -156,6 +164,16 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         config.binning_dot_size_thresholds,
         config.binning_halo_thresholds,
         config.binning_hysteresis_band,
+        config.tui_min_width,
+        config.tui_min_height,
+        config.tui_max_width,
+        config.tui_max_height,
+        config.tui_dot_radii,
+        config.tui_halo_radii,
+        config.tui_frame_enabled,
+        config.tui_frame_inset_px,
+        config.tui_frame_band_inner,
+        config.tui_frame_band_outer,
     )
     base_symbols = _collect_symbols(config)
 
@@ -176,9 +194,30 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         perp_symbols=_flatten(symbol_maps.perp_base_to_actual),
     )
 
-    runtime = _init_runtime(base_symbols, window_ms, symbol_maps, defaults)
+    runtime = _init_runtime(
+        base_symbols,
+        window_ms,
+        symbol_maps,
+        defaults,
+        config.spot_price_stale_switch_ticks,
+    )
     input_state = InputState(symbols=base_symbols)
-    renderer = Renderer(RendererConfig())
+    renderer = Renderer(
+        RendererConfig(
+            min_width=config.tui_min_width,
+            min_height=config.tui_min_height,
+            max_width=config.tui_max_width,
+            max_height=config.tui_max_height,
+            dot_radii=config.tui_dot_radii,
+            halo_radii=config.tui_halo_radii,
+            frame_enabled=config.tui_frame_enabled,
+            frame_inset_px=config.tui_frame_inset_px,
+            frame_band_inner=config.tui_frame_band_inner,
+            frame_band_outer=config.tui_frame_band_outer,
+            axis_flash_duration_s=config.update_window_seconds,
+            axis_flash_cooldown_s=config.update_window_seconds,
+        )
+    )
     live_metrics = LiveMetrics()
     diagnostics: DiagnosticLogger | None = None
     if diagnostics_enabled:
@@ -376,6 +415,7 @@ def _init_runtime(
     window_ms: int,
     symbol_maps: SymbolMaps,
     defaults: Defaults,
+    spot_price_stale_switch_ticks: int,
 ) -> RuntimeState:
     loops: dict[str, EngineLoop] = {}
     last_state: dict[str, StateSnapshot | None] = {}
@@ -383,7 +423,10 @@ def _init_runtime(
     last_event_ms: dict[str, int | None] = {symbol: None for symbol in symbols}
 
     for symbol in symbols:
-        buffer = RollingEventBuffer(window_delta_ms=window_ms)
+        buffer = RollingEventBuffer(
+            window_delta_ms=window_ms,
+            spot_stale_switch_ticks=spot_price_stale_switch_ticks,
+        )
         engine = StateEngine(defaults)
         loops[symbol] = EngineLoop(symbol=symbol, buffer=buffer, engine=engine)
         last_state[symbol] = None
@@ -568,6 +611,14 @@ class DiagnosticLogger:
             "persist_raw": state.persist_raw,
             "persist_slope": state.persist_slope,
             "persist_sign": state.persist_sign,
+            "persist_input": state.persist_input,
+            "persist_input_value": state.persist_input_value,
+            "persist_dt_s": state.persist_dt_s,
+            "persist_gain_per_second": state.persist_gain_per_second,
+            "persist_input_deadband": state.persist_input_deadband,
+            "persist_step_coeff": state.persist_step_coeff,
+            "persist_update_mode": state.persist_update_mode,
+            "persist_activity_flag": state.persist_activity_flag,
             "halo_raw": state.halo_raw,
             "halo": state.halo,
             "halo_bin": state.halo_bin,
@@ -593,14 +644,16 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "tanh_k": config.tanh_k,
         "scale_window_seconds": config.scale_window_seconds,
         "persist_enabled": config.persist_enabled,
-        "persist_tau_build_s": config.persist_tau_build_s,
-        "persist_tau_decay_s": config.persist_tau_decay_s,
+        "persist_input": config.persist_input,
+        "persist_gain_per_second": config.persist_gain_per_second,
+        "persist_input_deadband": config.persist_input_deadband,
         "disp_scale_multiplier": config.disp_scale_multiplier,
         "disp_scale_percentile": config.disp_scale_percentile,
         "disp_scale_min_samples": config.disp_scale_min_samples,
         "disp_scale_floor_percentile": config.disp_scale_floor_percentile,
         "effort_scale_percentile": config.effort_scale_percentile,
         "effort_scale_min_samples": config.effort_scale_min_samples,
+        "spot_price_stale_switch_ticks": config.spot_price_stale_switch_ticks,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -611,6 +664,16 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "binning_dot_size_thresholds": config.binning_dot_size_thresholds,
         "binning_halo_thresholds": config.binning_halo_thresholds,
         "binning_hysteresis_band": config.binning_hysteresis_band,
+        "tui_min_width": config.tui_min_width,
+        "tui_min_height": config.tui_min_height,
+        "tui_max_width": config.tui_max_width,
+        "tui_max_height": config.tui_max_height,
+        "tui_dot_radii": config.tui_dot_radii,
+        "tui_halo_radii": config.tui_halo_radii,
+        "tui_frame_enabled": config.tui_frame_enabled,
+        "tui_frame_inset_px": config.tui_frame_inset_px,
+        "tui_frame_band_inner": config.tui_frame_band_inner,
+        "tui_frame_band_outer": config.tui_frame_band_outer,
     }
 
 

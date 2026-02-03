@@ -24,9 +24,17 @@ class StateSnapshot:
     x: float
     y: float
     persist_enabled: bool
+    persist_input: str
+    persist_input_value: float
     persist_raw: float
     persist_slope: float
     persist_sign: int
+    persist_dt_s: float
+    persist_gain_per_second: float
+    persist_input_deadband: float
+    persist_step_coeff: float
+    persist_update_mode: str
+    persist_activity_flag: bool
     size_raw: float
     size_bin: int
     halo_raw: float
@@ -110,19 +118,34 @@ class StateEngine:
         eff_raw = self._effectiveness_ratio(disp_rate_dir, disp_scale, effort_rate, effort_scale)
         y_raw = self._apply_tanh(eff_raw)
         y_gated = gate * y_raw
-        persist_enabled = self._defaults.persistence.enabled
-        persist_raw, persist_slope, persist_sign = self._update_persistence(
-            frame.timestamp,
-            y_raw,
-            window_seconds,
-        )
-
         prev_x = self._x_smoothed
         prev_y = self._y_smoothed
         x = _smooth(prev_x, x_raw, self._defaults.smoothing.dominance_alpha)
         y = _smooth(prev_y, y_gated, self._defaults.smoothing.effectiveness_alpha)
         self._x_smoothed = x
         self._y_smoothed = y
+
+        persist_enabled = self._defaults.persistence.enabled
+        persist_input, persist_input_value = self._resolve_persistence_input(
+            y_raw=y_raw,
+            y_gated=y_gated,
+            y=y,
+        )
+        (
+            persist_raw,
+            persist_slope,
+            persist_sign,
+            persist_dt_s,
+            persist_gain_per_second,
+            persist_input_deadband,
+            persist_step_coeff,
+            persist_update_mode,
+            persist_activity_flag,
+        ) = self._update_persistence(
+            frame.timestamp,
+            persist_input_value,
+            window_seconds,
+        )
 
         size_raw = _clamp(self._force_magnitude(dominance, total_effort), 0.0, 1.0)
         size_bin = _bin_with_hysteresis(
@@ -160,9 +183,17 @@ class StateEngine:
             x=x,
             y=y,
             persist_enabled=persist_enabled,
+            persist_input=persist_input,
+            persist_input_value=persist_input_value,
             persist_raw=persist_raw,
             persist_slope=persist_slope,
             persist_sign=persist_sign,
+            persist_dt_s=persist_dt_s,
+            persist_gain_per_second=persist_gain_per_second,
+            persist_input_deadband=persist_input_deadband,
+            persist_step_coeff=persist_step_coeff,
+            persist_update_mode=persist_update_mode,
+            persist_activity_flag=persist_activity_flag,
             size_raw=size_raw,
             size_bin=size_bin,
             halo_raw=halo_raw,
@@ -293,11 +324,11 @@ class StateEngine:
         now_ms: int,
         acceptance: float,
         fallback_dt_s: float,
-    ) -> tuple[float, float, int]:
+    ) -> tuple[float, float, int, float, float, float, float, str, bool]:
         if not self._defaults.persistence.enabled:
             self._persist_state = 0.0
             self._persist_last_ts_ms = now_ms
-            return 0.0, 0.0, 0
+            return 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, "disabled", False
 
         if self._persist_last_ts_ms is None:
             dt_s = max(fallback_dt_s, EPSILON)
@@ -305,16 +336,49 @@ class StateEngine:
             dt_s = max((now_ms - self._persist_last_ts_ms) / 1000.0, EPSILON)
         self._persist_last_ts_ms = now_ms
 
-        tau_build = max(self._defaults.persistence.tau_build_s, EPSILON)
-        tau_decay = max(self._defaults.persistence.tau_decay_s, EPSILON)
-        build = 1.0 - _exp(-dt_s / tau_build)
-        decay = 1.0 - _exp(-dt_s / tau_decay)
+        gain_per_second = max(self._defaults.persistence.gain_per_second, EPSILON)
+        input_deadband = max(self._defaults.persistence.input_deadband, 0.0)
+        input_eff = acceptance if abs(acceptance) > input_deadband else 0.0
+        step_coeff = _clamp(gain_per_second * dt_s, 0.0, 1.0)
 
         prev = self._persist_state
-        current = _clamp(prev * (1.0 - decay) + build * acceptance, -1.0, 1.0)
+        current = _clamp(prev + step_coeff * input_eff, -1.0, 1.0)
         self._persist_state = current
         slope = (current - prev) / dt_s
-        return current, slope, _sign(current)
+        activity = abs(input_eff) > EPSILON
+        mode = "hold"
+        if activity:
+            prev_sign = _sign(prev)
+            acc_sign = _sign(input_eff)
+            if prev_sign == 0 or acc_sign == prev_sign:
+                mode = "build"
+            else:
+                mode = "oppose"
+        return (
+            current,
+            slope,
+            _sign(current),
+            dt_s,
+            gain_per_second,
+            input_deadband,
+            step_coeff,
+            mode,
+            activity,
+        )
+
+    def _resolve_persistence_input(
+        self,
+        *,
+        y_raw: float,
+        y_gated: float,
+        y: float,
+    ) -> tuple[str, float]:
+        source = self._defaults.persistence.input_source
+        if source == "y_raw":
+            return "Y_raw", y_raw
+        if source == "y":
+            return "Y", y
+        return "Y_gated", y_gated
 
     def _derive_lean(
         self,

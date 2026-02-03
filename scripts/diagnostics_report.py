@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import sys
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ X_MIN_THRESHOLD = 0.2
 EPSILON = 1e-12
 EFF_REL_ACTIVE_MULTIPLIER = 1.0
 K_RECO_TARGETS = (0.6, 0.7, 0.8)
+PERSIST_A_QUIET_ABS = 0.05
+PERSIST_S_ELEVATED_ABS = 0.35
+PERSIST_A_ACTIVE_ABS = 0.10
 
 
 @dataclass
@@ -86,19 +90,23 @@ def _ratio(numerator: int, denominator: int) -> float:
 
 def _load_records(path: Path) -> list[dict]:
     records: list[dict] = []
-    if path.suffix == ".gz":
-        handle = gzip.open(path, "rt", encoding="utf-8")
-    else:
-        handle = path.open("r", encoding="utf-8")
-    with handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            record = json.loads(line)
-            if isinstance(record, dict) and "_meta" in record:
-                continue
-            records.append(record)
+    try:
+        if path.suffix == ".gz":
+            handle = gzip.open(path, "rt", encoding="utf-8")
+        else:
+            handle = path.open("r", encoding="utf-8")
+        with handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                if isinstance(record, dict) and "_meta" in record:
+                    continue
+                records.append(record)
+    except (EOFError, gzip.BadGzipFile, OSError) as exc:
+        print(f"warning: skipping unreadable log {path} ({exc})", file=sys.stderr)
+        return []
     return records
 
 
@@ -182,14 +190,16 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "tanh_k",
         "scale_window_seconds",
         "persist_enabled",
-        "persist_tau_build_s",
-        "persist_tau_decay_s",
+        "persist_input",
+        "persist_gain_per_second",
+        "persist_input_deadband",
         "disp_scale_multiplier",
         "disp_scale_percentile",
         "disp_scale_min_samples",
         "disp_scale_floor_percentile",
         "effort_scale_percentile",
         "effort_scale_min_samples",
+        "spot_price_stale_switch_ticks",
         "effort_floor_multiplier",
         "effort_floor_ticks",
         "smoothing_dominance_alpha",
@@ -200,6 +210,16 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "binning_dot_size_thresholds",
         "binning_halo_thresholds",
         "binning_hysteresis_band",
+        "tui_min_width",
+        "tui_min_height",
+        "tui_max_width",
+        "tui_max_height",
+        "tui_dot_radii",
+        "tui_halo_radii",
+        "tui_frame_enabled",
+        "tui_frame_inset_px",
+        "tui_frame_band_inner",
+        "tui_frame_band_outer",
     ]
     return {key: runtime[key] for key in ordered_keys if key in runtime}
 
@@ -324,6 +344,9 @@ def _write_summary(
             aggregated[key]["price_series_switch_rate"].append(
                 _as_float(stats.get("price_series_switch_rate_per_min"))
             )
+            aggregated[key]["price_series_base_switch_rate"].append(
+                _as_float(stats.get("price_series_base_switch_rate_per_min"))
+            )
             aggregated[key]["air_pocket_active_rate"].append(
                 _as_float(stats.get("air_pocket_active_rate"))
             )
@@ -332,6 +355,33 @@ def _write_summary(
             )
             aggregated[key]["y_raw_disp_dir_mismatch_rate"].append(
                 _as_float(stats.get("y_raw_disp_dir_mismatch_rate"))
+            )
+            mode_fracs = _as_float_map(stats.get("persist_update_mode_fractions"))
+            aggregated[key]["persist_mode_build_frac"].append(_as_float(mode_fracs.get("build")))
+            aggregated[key]["persist_mode_oppose_frac"].append(_as_float(mode_fracs.get("oppose")))
+            aggregated[key]["persist_mode_hold_frac"].append(_as_float(mode_fracs.get("hold")))
+            aggregated[key]["persist_activity_rate"].append(
+                _as_float(stats.get("persist_activity_rate"))
+            )
+            aggregated[key]["persist_abs_p95"].append(_as_float(stats.get("persist_abs_p95")))
+            aggregated[key]["persist_abs_p99"].append(_as_float(stats.get("persist_abs_p99")))
+            aggregated[key]["persist_abs_max"].append(_as_float(stats.get("persist_abs_max")))
+            aggregated[key]["persist_dt_p50_s"].append(_as_float(stats.get("persist_dt_p50_s")))
+            aggregated[key]["persist_dt_p90_s"].append(_as_float(stats.get("persist_dt_p90_s")))
+            aggregated[key]["persist_stale_hold_max_s"].append(
+                _as_float(stats.get("persist_stale_hold_max_s"))
+            )
+            aggregated[key]["persist_stale_hold_p95_s"].append(
+                _as_float(stats.get("persist_stale_hold_p95_s"))
+            )
+            aggregated[key]["persist_oppose_half_life_p50_s"].append(
+                _as_float(stats.get("persist_oppose_half_life_p50_s"))
+            )
+            aggregated[key]["persist_oppose_half_life_rate"].append(
+                _as_float(stats.get("persist_oppose_half_life_rate"))
+            )
+            aggregated[key]["persist_oppose_flip_latency_p50_s"].append(
+                _as_float(stats.get("persist_oppose_flip_latency_p50_s"))
             )
             aggregated[key]["gate_low_rate"].append(_as_float(stats.get("gate_low_rate")))
             aggregated[key]["x_raw_mean"].append(_as_float(stats.get("x_raw_mean")))
@@ -407,6 +457,23 @@ def _write_summary(
                 f"{_median(aggregated[key]['y_raw_disp_dir_mismatch_rate']):.2f}\n"
             )
             handle.write(
+                "p95|S| "
+                f"{_median(aggregated[key]['persist_abs_p95']):.3f}  "
+                "p99|S| "
+                f"{_median(aggregated[key]['persist_abs_p99']):.3f}  "
+                "max|S| "
+                f"{_median(aggregated[key]['persist_abs_max']):.3f}  "
+                "Mode b/o/h "
+                f"{_median(aggregated[key]['persist_mode_build_frac']):.2f}/"
+                f"{_median(aggregated[key]['persist_mode_oppose_frac']):.2f}/"
+                f"{_median(aggregated[key]['persist_mode_hold_frac']):.2f}  "
+                "Act "
+                f"{_median(aggregated[key]['persist_activity_rate']):.2f}  "
+                "dt_p50/p90 "
+                f"{_median(aggregated[key]['persist_dt_p50_s']):.2f}/"
+                f"{_median(aggregated[key]['persist_dt_p90_s']):.2f}s\n"
+            )
+            handle.write(
                 "eff_rel_p95_all "
                 f"{_median(aggregated[key]['eff_rel_abs_p95_all']):.3f}  "
                 "eff_rel_p95_active "
@@ -425,8 +492,19 @@ def _write_summary(
                 f"{_median(aggregated[key]['e_dir_persistence_p50']):.0f}  "
                 "Series switch "
                 f"{_median(aggregated[key]['price_series_switch_rate']):.2f}/m  "
+                "Spot/perp switch "
+                f"{_median(aggregated[key]['price_series_base_switch_rate']):.2f}/m  "
                 "Air pocket "
                 f"{_median(aggregated[key]['air_pocket_active_rate']):.2f}  "
+                "S_hold_max/p95 "
+                f"{_median(aggregated[key]['persist_stale_hold_max_s']):.0f}/"
+                f"{_median(aggregated[key]['persist_stale_hold_p95_s']):.0f}s  "
+                "Opp_half_p50 "
+                f"{_median(aggregated[key]['persist_oppose_half_life_p50_s']):.0f}s  "
+                "Opp_flip_p50 "
+                f"{_median(aggregated[key]['persist_oppose_flip_latency_p50_s']):.0f}s  "
+                "Opp_half_hit "
+                f"{_median(aggregated[key]['persist_oppose_half_life_rate']):.2f}  "
                 "X_raw mean "
                 f"{_median(aggregated[key]['x_raw_mean']):.2f}\n"
             )
@@ -465,6 +543,11 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     persist_raw_stats = SeriesStats([])
     persist_slope_stats = SeriesStats([])
     persist_sign_stats = SeriesStats([])
+    persist_input_value_stats = SeriesStats([])
+    persist_dt_s_stats = SeriesStats([])
+    persist_gain_per_second_stats = SeriesStats([])
+    persist_input_deadband_stats = SeriesStats([])
+    persist_step_coeff_stats = SeriesStats([])
     x_raw_stats = SeriesStats([])
     x_stats = SeriesStats([])
     size_raw_stats = SeriesStats([])
@@ -492,6 +575,8 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     price_series_counts: Counter[str] = Counter()
     top_source_counts: Counter[str] = Counter()
     size_bins: Counter[int] = Counter()
+    persist_input_counts: Counter[str] = Counter()
+    persist_update_mode_counts: Counter[str] = Counter()
 
     spot_fresh = 0
     perp_fresh = 0
@@ -506,6 +591,20 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     y_raw_disp_mismatch_total = 0
     y_raw_disp_dir_mismatch = 0
     y_raw_disp_dir_mismatch_total = 0
+
+    persist_activity_true = 0
+
+    stale_hold_run_s = 0.0
+    stale_hold_runs_s: list[float] = []
+    stale_hold_max_s = 0.0
+
+    oppose_run_active = False
+    oppose_run_elapsed_s = 0.0
+    oppose_run_start_abs: float | None = None
+    oppose_run_start_sign: int = 0
+    oppose_run_starts = 0
+    oppose_half_life_s: list[float] = []
+    oppose_flip_latency_s: list[float] = []
 
     last_now_ms: int | None = None
     tick_intervals: list[float] = []
@@ -532,8 +631,13 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     in_neutral_regime = False
     prev_series: str | None = None
     series_switches = 0
+    prev_base_series: str | None = None
+    base_series_switches = 0
     last_e_dir_sign = 0
     e_dir_run = 0
+    prev_persist_s: float | None = None
+    oppose_run_half_found = False
+    oppose_run_flip_found = False
 
     for record in records:
         dt_s = 0.0
@@ -548,6 +652,15 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         if prev_series is not None and series != prev_series:
             series_switches += 1
         prev_series = series
+        if series.startswith("spot"):
+            base_series = "spot"
+        elif series.startswith("perp"):
+            base_series = "perp"
+        else:
+            base_series = series
+        if prev_base_series is not None and base_series != prev_base_series:
+            base_series_switches += 1
+        prev_base_series = base_series
 
         now_ms_stats.add(float(now_ms))
         window_stats.add(float(record.get("window_ms", 0)))
@@ -559,9 +672,92 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         tanh_k_stats.add(float(record.get("tanh_k", 0.0)))
         y_raw_stats.add(float(record.get("Y_raw", 0.0)))
         y_stats.add(float(record.get("Y", 0.0)))
-        persist_raw_stats.add(float(record.get("persist_raw", 0.0)))
+        persist_s_value = float(record.get("persist_raw", 0.0))
+        persist_raw_stats.add(persist_s_value)
         persist_slope_stats.add(float(record.get("persist_slope", 0.0)))
         persist_sign_stats.add(float(record.get("persist_sign", 0.0)))
+        persist_input = str(record.get("persist_input", "unknown")) or "unknown"
+        persist_input_counts[persist_input] += 1
+        raw_input_value = record.get("persist_input_value")
+        if raw_input_value is None:
+            if persist_input in {"Y_raw", "y_raw"}:
+                persist_input_value = float(record.get("Y_raw", 0.0))
+            elif persist_input in {"Y_gated", "y_gated"}:
+                persist_input_value = float(record.get("Y_gated", 0.0))
+            elif persist_input in {"Y", "y"}:
+                persist_input_value = float(record.get("Y", 0.0))
+            else:
+                persist_input_value = 0.0
+        else:
+            persist_input_value = float(raw_input_value)
+        persist_input_value_stats.add(persist_input_value)
+        persist_dt_s_value_raw = record.get("persist_dt_s")
+        if isinstance(persist_dt_s_value_raw, (int, float)):
+            persist_dt_s_value = float(persist_dt_s_value_raw)
+        else:
+            persist_dt_s_value = dt_s
+        if persist_dt_s_value > 0:
+            persist_dt_s_stats.add(persist_dt_s_value)
+        persist_gain_per_second_stats.add(float(record.get("persist_gain_per_second", 0.0)))
+        persist_input_deadband_stats.add(float(record.get("persist_input_deadband", 0.0)))
+        persist_step_coeff_stats.add(float(record.get("persist_step_coeff", 0.0)))
+        persist_update_mode = str(record.get("persist_update_mode", "unknown")) or "unknown"
+        persist_update_mode_counts[persist_update_mode] += 1
+        persist_activity_raw = record.get("persist_activity_flag", False)
+        persist_activity_flag = bool(persist_activity_raw)
+        if isinstance(persist_activity_raw, (int, float)):
+            persist_activity_flag = bool(int(persist_activity_raw))
+        if persist_activity_flag:
+            persist_activity_true += 1
+
+        if (
+            abs(persist_input_value) <= PERSIST_A_QUIET_ABS
+            and abs(persist_s_value) >= PERSIST_S_ELEVATED_ABS
+        ):
+            stale_hold_run_s += persist_dt_s_value
+        else:
+            if stale_hold_run_s > 0:
+                stale_hold_runs_s.append(stale_hold_run_s)
+                stale_hold_max_s = max(stale_hold_max_s, stale_hold_run_s)
+                stale_hold_run_s = 0.0
+
+        if (
+            persist_update_mode == "oppose"
+            and prev_persist_s is not None
+            and abs(prev_persist_s) >= PERSIST_S_ELEVATED_ABS
+            and abs(persist_input_value) >= PERSIST_A_ACTIVE_ABS
+        ):
+            if not oppose_run_active:
+                oppose_run_active = True
+                oppose_run_elapsed_s = 0.0
+                oppose_run_start_abs = abs(prev_persist_s)
+                oppose_run_start_sign = _sign(prev_persist_s)
+                oppose_run_starts += 1
+                oppose_run_half_found = False
+                oppose_run_flip_found = False
+            oppose_run_elapsed_s += persist_dt_s_value
+            if oppose_run_start_abs is not None and oppose_run_start_abs > 0:
+                if not oppose_run_half_found and abs(persist_s_value) <= 0.5 * oppose_run_start_abs:
+                    oppose_half_life_s.append(oppose_run_elapsed_s)
+                    oppose_run_half_found = True
+            if oppose_run_start_sign != 0:
+                current_sign = _sign(persist_s_value)
+                if (
+                    not oppose_run_flip_found
+                    and current_sign != 0
+                    and current_sign != oppose_run_start_sign
+                ):
+                    oppose_flip_latency_s.append(oppose_run_elapsed_s)
+                    oppose_run_flip_found = True
+        else:
+            if oppose_run_active:
+                oppose_run_active = False
+                oppose_run_elapsed_s = 0.0
+                oppose_run_start_abs = None
+                oppose_run_start_sign = 0
+                oppose_run_half_found = False
+                oppose_run_flip_found = False
+        prev_persist_s = persist_s_value
         x_raw_stats.add(float(record.get("X_raw", 0.0)))
         x_stats.add(float(record.get("X", 0.0)))
         size_raw_stats.add(float(record.get("size_raw", 0.0)))
@@ -725,6 +921,10 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
                     flip_counts_neutral[key] += 1
                 last_nonzero_signs_neutral[key] = current_sign
 
+    if stale_hold_run_s > 0:
+        stale_hold_runs_s.append(stale_hold_run_s)
+        stale_hold_max_s = max(stale_hold_max_s, stale_hold_run_s)
+
     if tick_intervals:
         out["tick_interval_s"] = {
             "mean": mean(tick_intervals),
@@ -750,8 +950,48 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     out["price_series_switch_rate_per_min"] = (
         series_switches / (total_duration_s / 60.0) if total_duration_s > 0 else 0.0
     )
+    out["price_series_base_switches"] = base_series_switches
+    out["price_series_base_switch_rate_per_min"] = (
+        base_series_switches / (total_duration_s / 60.0) if total_duration_s > 0 else 0.0
+    )
     out["duration_s"] = total_duration_s
     out["duration_min"] = total_duration_s / 60.0 if total_duration_s > 0 else 0.0
+
+    out["persist_input_counts"] = dict(persist_input_counts)
+    out["persist_update_mode_counts"] = dict(persist_update_mode_counts)
+    out["persist_activity_rate"] = _ratio(persist_activity_true, len(records))
+    persist_dt_sorted = sorted(persist_dt_s_stats.values)
+    out["persist_dt_p50_s"] = _percentile(persist_dt_sorted, 0.50) if persist_dt_sorted else 0.0
+    out["persist_dt_p90_s"] = _percentile(persist_dt_sorted, 0.90) if persist_dt_sorted else 0.0
+    out["persist_dt_mean_s"] = mean(persist_dt_sorted) if persist_dt_sorted else 0.0
+    out["persist_update_mode_fractions"] = {
+        mode: _ratio(count, len(records)) for mode, count in persist_update_mode_counts.items()
+    }
+
+    persist_abs = [abs(value) for value in persist_raw_stats.values]
+    out["persist_abs_p95"] = _percentile(sorted(persist_abs), 0.95) if persist_abs else 0.0
+    out["persist_abs_p99"] = _percentile(sorted(persist_abs), 0.99) if persist_abs else 0.0
+    out["persist_abs_max"] = max(persist_abs) if persist_abs else 0.0
+    out["persist_stale_hold_max_s"] = stale_hold_max_s
+    out["persist_stale_hold_p95_s"] = (
+        _percentile(sorted(stale_hold_runs_s), 0.95) if stale_hold_runs_s else 0.0
+    )
+    out["persist_stale_hold_runs"] = len(stale_hold_runs_s)
+    out["persist_stale_hold_a_quiet_abs"] = PERSIST_A_QUIET_ABS
+    out["persist_stale_hold_s_elevated_abs"] = PERSIST_S_ELEVATED_ABS
+
+    out["persist_oppose_half_life_p50_s"] = (
+        _percentile(sorted(oppose_half_life_s), 0.50) if oppose_half_life_s else 0.0
+    )
+    out["persist_oppose_half_life_p90_s"] = (
+        _percentile(sorted(oppose_half_life_s), 0.90) if oppose_half_life_s else 0.0
+    )
+    out["persist_oppose_flip_latency_p50_s"] = (
+        _percentile(sorted(oppose_flip_latency_s), 0.50) if oppose_flip_latency_s else 0.0
+    )
+    out["persist_oppose_runs"] = oppose_run_starts
+    out["persist_oppose_half_life_rate"] = _ratio(len(oppose_half_life_s), oppose_run_starts)
+    out["persist_oppose_a_active_abs"] = PERSIST_A_ACTIVE_ABS
 
     out["y_raw_disp_mismatch_rate"] = _ratio(
         y_raw_disp_mismatch, y_raw_disp_mismatch_total
@@ -858,6 +1098,19 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     out["persist_raw"] = _format_summary("persist_raw", persist_raw_stats.summary())
     out["persist_slope"] = _format_summary("persist_slope", persist_slope_stats.summary())
     out["persist_sign"] = _format_summary("persist_sign", persist_sign_stats.summary())
+    out["persist_input_value"] = _format_summary(
+        "persist_input_value", persist_input_value_stats.summary()
+    )
+    out["persist_dt_s"] = _format_summary("persist_dt_s", persist_dt_s_stats.summary())
+    out["persist_gain_per_second"] = _format_summary(
+        "persist_gain_per_second", persist_gain_per_second_stats.summary()
+    )
+    out["persist_input_deadband"] = _format_summary(
+        "persist_input_deadband", persist_input_deadband_stats.summary()
+    )
+    out["persist_step_coeff"] = _format_summary(
+        "persist_step_coeff", persist_step_coeff_stats.summary()
+    )
     out["X_raw"] = _format_summary("X_raw", x_raw_stats.summary())
     out["X"] = _format_summary("X", x_stats.summary())
     out["size_raw"] = _format_summary("size_raw", size_raw_stats.summary())
@@ -1112,6 +1365,45 @@ def main() -> None:
                 "sign_flip_rate_per_min_delta_raw_minus_smoothed: "
                 f"{stats['sign_flip_rate_per_min_delta_raw_minus_smoothed']}\n"
             )
+            handle.write(f"persist_input_counts: {stats['persist_input_counts']}\n")
+            handle.write(f"persist_update_mode_counts: {stats['persist_update_mode_counts']}\n")
+            handle.write(
+                "persist_update_mode_fractions: "
+                f"{stats['persist_update_mode_fractions']}\n"
+            )
+            handle.write(
+                "persist_activity_rate: "
+                f"{stats['persist_activity_rate']:.2f}\n"
+            )
+            handle.write(
+                "persist_dt_p50_s/p90_s/mean_s: "
+                f"{stats['persist_dt_p50_s']:.2f}/"
+                f"{stats['persist_dt_p90_s']:.2f}/"
+                f"{stats['persist_dt_mean_s']:.2f}\n"
+            )
+            handle.write(
+                "persist_abs_p95/p99/max: "
+                f"{stats['persist_abs_p95']:.2f}/"
+                f"{stats['persist_abs_p99']:.2f}/"
+                f"{stats['persist_abs_max']:.2f}\n"
+            )
+            handle.write(
+                "persist_stale_hold_max_s/p95_s/runs: "
+                f"{stats['persist_stale_hold_max_s']:.1f}/"
+                f"{stats['persist_stale_hold_p95_s']:.1f}/"
+                f"{stats['persist_stale_hold_runs']}\n"
+            )
+            handle.write(
+                "persist_oppose_half_life_p50_s/p90_s/flip_p50_s: "
+                f"{stats['persist_oppose_half_life_p50_s']:.1f}/"
+                f"{stats['persist_oppose_half_life_p90_s']:.1f}/"
+                f"{stats['persist_oppose_flip_latency_p50_s']:.1f}\n"
+            )
+            handle.write(
+                "persist_oppose_runs/half_life_rate: "
+                f"{stats['persist_oppose_runs']}/"
+                f"{stats['persist_oppose_half_life_rate']:.2f}\n"
+            )
             for key in (
                 "window_ms",
                 "log_return",
@@ -1126,6 +1418,11 @@ def main() -> None:
                 "persist_raw",
                 "persist_slope",
                 "persist_sign",
+                "persist_input_value",
+                "persist_dt_s",
+                "persist_gain_per_second",
+                "persist_input_deadband",
+                "persist_step_coeff",
                 "X_raw",
                 "X",
                 "size_raw",
