@@ -184,3 +184,15 @@ Flow Lens is a **physics instrument for market structure**.
 Clarity > Complexity  
 Structure > Indicators  
 Truthful representation > feature count
+
+### Precision and stability (important)
+
+Flow Lens is intended to be a **professional-grade structural lens**.
+
+- **Precision is still the goal**, but precision is meaningless if it cannot be perceived.
+- Therefore, **perceptual stability is a prerequisite for precision** (it is not an excuse to avoid precision).
+- The project’s correct framing is:
+  1) semantic correctness (truth),
+  2) perceptual stability (readability of truth),
+  3) cross-symbol consistency,
+  4) then pursue higher precision without reintroducing instability.

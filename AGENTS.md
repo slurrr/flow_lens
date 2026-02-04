@@ -138,6 +138,16 @@ Adapters must not:
 
 Never sacrifice (1)–(3) for (4) or (5).
 
+Clarification (project maturity / contributor level-set):
+
+- **Precision is still the goal**, but precision is meaningless if it cannot be perceived.
+- Therefore we treat **perceptual stability as a prerequisite for precision**, not a replacement for it.
+- The “correct” framing is:
+  1) semantic correctness (truth),
+  2) perceptual stability (readability of truth at a glance),
+  3) cross-symbol consistency,
+  4) then push precision as far as possible without reintroducing instability.
+
 ---
 
 ## Guiding Principle

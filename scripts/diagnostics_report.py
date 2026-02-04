@@ -17,9 +17,24 @@ X_MIN_THRESHOLD = 0.2
 EPSILON = 1e-12
 EFF_REL_ACTIVE_MULTIPLIER = 1.0
 K_RECO_TARGETS = (0.6, 0.7, 0.8)
-PERSIST_A_QUIET_ABS = 0.05
-PERSIST_S_ELEVATED_ABS = 0.35
-PERSIST_A_ACTIVE_ABS = 0.10
+
+# Persistence-release diagnostics:
+# - "quiet hold": A_eff stays quiet but S remains elevated
+# - "pivot neutralization": mode enters pivot and S is pulled toward neutral
+# Thresholds must be dt-safe and should track current persistence amplitude.
+PERSIST_S_ELEVATED_ABS_MIN = 0.15
+PERSIST_A_ACTIVE_ABS_FALLBACK = 0.10
+PERSIST_A_QUIET_ABS_FALLBACK = 0.05
+PERSIST_PIVOT_NEUTRAL_ZONE_ABS_FALLBACK = 0.08
+
+
+def _config_float(config: dict[str, object] | None, key: str, fallback: float) -> float:
+    if not config:
+        return fallback
+    value = config.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return fallback
 
 
 @dataclass
@@ -342,7 +357,7 @@ def _write_summary(
         symbol_label, regime_label, scenario_id = _parse_replay_label(path)
         replay_meta = _load_replay_meta(path)
         for symbol, entries in grouped.items():
-            stats = _stats_for_symbol(entries)
+            stats = _stats_for_symbol(entries, config=config_values)
             label_symbol = symbol_label if symbol_label != "UNKNOWN" else symbol
             key = (label_symbol, regime_label)
             runs[key] += 1
@@ -394,14 +409,17 @@ def _write_summary(
             aggregated[key]["persist_stale_hold_p95_s"].append(
                 _as_float(stats.get("persist_stale_hold_p95_s"))
             )
-            aggregated[key]["persist_oppose_half_life_p50_s"].append(
-                _as_float(stats.get("persist_oppose_half_life_p50_s"))
+            aggregated[key]["persist_pivot_half_life_p50_s"].append(
+                _as_float(stats.get("persist_pivot_half_life_p50_s"))
             )
-            aggregated[key]["persist_oppose_half_life_rate"].append(
-                _as_float(stats.get("persist_oppose_half_life_rate"))
+            aggregated[key]["persist_pivot_to_neutral_p50_s"].append(
+                _as_float(stats.get("persist_pivot_to_neutral_p50_s"))
             )
-            aggregated[key]["persist_oppose_flip_latency_p50_s"].append(
-                _as_float(stats.get("persist_oppose_flip_latency_p50_s"))
+            aggregated[key]["persist_pivot_to_neutral_rate"].append(
+                _as_float(stats.get("persist_pivot_to_neutral_rate"))
+            )
+            aggregated[key]["persist_quiet_release_half_life_p50_s"].append(
+                _as_float(stats.get("persist_quiet_release_half_life_p50_s"))
             )
             aggregated[key]["gate_low_rate"].append(_as_float(stats.get("gate_low_rate")))
             aggregated[key]["x_raw_mean"].append(_as_float(stats.get("x_raw_mean")))
@@ -519,12 +537,14 @@ def _write_summary(
                 "S_hold_max/p95 "
                 f"{_median(aggregated[key]['persist_stale_hold_max_s']):.0f}/"
                 f"{_median(aggregated[key]['persist_stale_hold_p95_s']):.0f}s  "
-                "Opp_half_p50 "
-                f"{_median(aggregated[key]['persist_oppose_half_life_p50_s']):.0f}s  "
-                "Opp_flip_p50 "
-                f"{_median(aggregated[key]['persist_oppose_flip_latency_p50_s']):.0f}s  "
-                "Opp_half_hit "
-                f"{_median(aggregated[key]['persist_oppose_half_life_rate']):.2f}  "
+                "Pivot_to0_p50 "
+                f"{_median(aggregated[key]['persist_pivot_to_neutral_p50_s']):.0f}s  "
+                "Pivot_half_p50 "
+                f"{_median(aggregated[key]['persist_pivot_half_life_p50_s']):.0f}s  "
+                "Pivot_to0_hit "
+                f"{_median(aggregated[key]['persist_pivot_to_neutral_rate']):.2f}  "
+                "Quiet_half_p50 "
+                f"{_median(aggregated[key]['persist_quiet_release_half_life_p50_s']):.0f}s  "
                 "X_raw mean "
                 f"{_median(aggregated[key]['x_raw_mean']):.2f}\n"
             )
@@ -546,10 +566,32 @@ def _iter_symbols(records: Iterable[dict], symbols: set[str] | None) -> dict[str
     return grouped
 
 
-def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
+def _stats_for_symbol(
+    records: list[dict],
+    *,
+    config: dict[str, object] | None = None,
+) -> dict[str, object]:
     records.sort(key=lambda record: int(record.get("now_ms", 0)))
     out: dict[str, object] = {}
     out["records"] = len(records)
+
+    pivot_neutral_zone_abs = _config_float(
+        config,
+        "persist_pivot_neutral_zone_abs",
+        PERSIST_PIVOT_NEUTRAL_ZONE_ABS_FALLBACK,
+    )
+    pivot_active_abs = _config_float(
+        config,
+        "persist_pivot_active_abs",
+        PERSIST_A_ACTIVE_ABS_FALLBACK,
+    )
+    dormant_quiet_abs = _config_float(
+        config,
+        "persist_dormant_quiet_abs",
+        PERSIST_A_QUIET_ABS_FALLBACK,
+    )
+    # Define "elevated S" in a way that adapts to the configured neutral zone.
+    s_elevated_abs = max(PERSIST_S_ELEVATED_ABS_MIN, 2.0 * pivot_neutral_zone_abs)
 
     now_ms_stats = SeriesStats([])
     window_stats = SeriesStats([])
@@ -620,13 +662,20 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     stale_hold_runs_s: list[float] = []
     stale_hold_max_s = 0.0
 
-    oppose_run_active = False
-    oppose_run_elapsed_s = 0.0
-    oppose_run_start_abs: float | None = None
-    oppose_run_start_sign: int = 0
-    oppose_run_starts = 0
-    oppose_half_life_s: list[float] = []
-    oppose_flip_latency_s: list[float] = []
+    pivot_run_active = False
+    pivot_run_elapsed_s = 0.0
+    pivot_run_start_abs: float | None = None
+    pivot_run_starts = 0
+    pivot_run_half_found = False
+    pivot_half_life_s: list[float] = []
+    pivot_to_neutral_s: list[float] = []
+
+    quiet_release_active = False
+    quiet_release_elapsed_s = 0.0
+    quiet_release_start_abs: float | None = None
+    quiet_release_starts = 0
+    quiet_release_half_found = False
+    quiet_release_half_life_s: list[float] = []
 
     last_now_ms: int | None = None
     tick_intervals: list[float] = []
@@ -658,8 +707,6 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
     last_e_dir_sign = 0
     e_dir_run = 0
     prev_persist_s: float | None = None
-    oppose_run_half_found = False
-    oppose_run_flip_found = False
 
     for record in records:
         dt_s = 0.0
@@ -732,10 +779,7 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         if persist_activity_flag:
             persist_activity_true += 1
 
-        if (
-            abs(persist_input_value) <= PERSIST_A_QUIET_ABS
-            and abs(persist_s_value) >= PERSIST_S_ELEVATED_ABS
-        ):
+        if abs(persist_input_value) <= dormant_quiet_abs and abs(persist_s_value) >= s_elevated_abs:
             stale_hold_run_s += persist_dt_s_value
         else:
             if stale_hold_run_s > 0:
@@ -743,42 +787,73 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
                 stale_hold_max_s = max(stale_hold_max_s, stale_hold_run_s)
                 stale_hold_run_s = 0.0
 
+        # Pivot neutralization is the canonical “opposition unwind” in Experiment B.
+        # Measure pivots that start meaningfully away from neutral.
         if (
-            persist_update_mode == "oppose"
+            persist_update_mode == "pivot"
             and prev_persist_s is not None
-            and abs(prev_persist_s) >= PERSIST_S_ELEVATED_ABS
-            and abs(persist_input_value) >= PERSIST_A_ACTIVE_ABS
+            and abs(prev_persist_s) > pivot_neutral_zone_abs
         ):
-            if not oppose_run_active:
-                oppose_run_active = True
-                oppose_run_elapsed_s = 0.0
-                oppose_run_start_abs = abs(prev_persist_s)
-                oppose_run_start_sign = _sign(prev_persist_s)
-                oppose_run_starts += 1
-                oppose_run_half_found = False
-                oppose_run_flip_found = False
-            oppose_run_elapsed_s += persist_dt_s_value
-            if oppose_run_start_abs is not None and oppose_run_start_abs > 0:
-                if not oppose_run_half_found and abs(persist_s_value) <= 0.5 * oppose_run_start_abs:
-                    oppose_half_life_s.append(oppose_run_elapsed_s)
-                    oppose_run_half_found = True
-            if oppose_run_start_sign != 0:
-                current_sign = _sign(persist_s_value)
-                if (
-                    not oppose_run_flip_found
-                    and current_sign != 0
-                    and current_sign != oppose_run_start_sign
-                ):
-                    oppose_flip_latency_s.append(oppose_run_elapsed_s)
-                    oppose_run_flip_found = True
+            if not pivot_run_active:
+                pivot_run_active = True
+                pivot_run_elapsed_s = 0.0
+                pivot_run_start_abs = abs(prev_persist_s)
+                pivot_run_starts += 1
+                pivot_run_half_found = False
+
+            pivot_run_elapsed_s += persist_dt_s_value
+
+            if (
+                pivot_run_start_abs is not None
+                and pivot_run_start_abs >= s_elevated_abs
+                and not pivot_run_half_found
+                and abs(persist_s_value) <= 0.5 * pivot_run_start_abs
+            ):
+                pivot_half_life_s.append(pivot_run_elapsed_s)
+                pivot_run_half_found = True
+
+            if abs(persist_s_value) <= pivot_neutral_zone_abs:
+                pivot_to_neutral_s.append(pivot_run_elapsed_s)
+                pivot_run_active = False
+                pivot_run_elapsed_s = 0.0
+                pivot_run_start_abs = None
+                pivot_run_half_found = False
         else:
-            if oppose_run_active:
-                oppose_run_active = False
-                oppose_run_elapsed_s = 0.0
-                oppose_run_start_abs = None
-                oppose_run_start_sign = 0
-                oppose_run_half_found = False
-                oppose_run_flip_found = False
+            if pivot_run_active:
+                pivot_run_active = False
+                pivot_run_elapsed_s = 0.0
+                pivot_run_start_abs = None
+                pivot_run_half_found = False
+
+        # Quiet release: S should not overstay after support disappears (A_eff goes quiet).
+        if (
+            persist_update_mode == "active"
+            and abs(persist_input_value) <= dormant_quiet_abs
+            and prev_persist_s is not None
+            and abs(prev_persist_s) >= s_elevated_abs
+        ):
+            if not quiet_release_active:
+                quiet_release_active = True
+                quiet_release_elapsed_s = 0.0
+                quiet_release_start_abs = abs(prev_persist_s)
+                quiet_release_starts += 1
+                quiet_release_half_found = False
+
+            quiet_release_elapsed_s += persist_dt_s_value
+
+            if quiet_release_start_abs is not None and quiet_release_start_abs > 0:
+                if (
+                    not quiet_release_half_found
+                    and abs(persist_s_value) <= 0.5 * quiet_release_start_abs
+                ):
+                    quiet_release_half_life_s.append(quiet_release_elapsed_s)
+                    quiet_release_half_found = True
+        else:
+            if quiet_release_active:
+                quiet_release_active = False
+                quiet_release_elapsed_s = 0.0
+                quiet_release_start_abs = None
+                quiet_release_half_found = False
         prev_persist_s = persist_s_value
         x_raw_stats.add(float(record.get("X_raw", 0.0)))
         x_stats.add(float(record.get("X", 0.0)))
@@ -1001,21 +1076,42 @@ def _stats_for_symbol(records: list[dict]) -> dict[str, object]:
         _percentile(sorted(stale_hold_runs_s), 0.95) if stale_hold_runs_s else 0.0
     )
     out["persist_stale_hold_runs"] = len(stale_hold_runs_s)
-    out["persist_stale_hold_a_quiet_abs"] = PERSIST_A_QUIET_ABS
-    out["persist_stale_hold_s_elevated_abs"] = PERSIST_S_ELEVATED_ABS
+    out["persist_stale_hold_a_quiet_abs"] = dormant_quiet_abs
+    out["persist_stale_hold_s_elevated_abs"] = s_elevated_abs
 
-    out["persist_oppose_half_life_p50_s"] = (
-        _percentile(sorted(oppose_half_life_s), 0.50) if oppose_half_life_s else 0.0
+    out["persist_pivot_half_life_p50_s"] = (
+        _percentile(sorted(pivot_half_life_s), 0.50) if pivot_half_life_s else 0.0
     )
-    out["persist_oppose_half_life_p90_s"] = (
-        _percentile(sorted(oppose_half_life_s), 0.90) if oppose_half_life_s else 0.0
+    out["persist_pivot_half_life_p90_s"] = (
+        _percentile(sorted(pivot_half_life_s), 0.90) if pivot_half_life_s else 0.0
     )
-    out["persist_oppose_flip_latency_p50_s"] = (
-        _percentile(sorted(oppose_flip_latency_s), 0.50) if oppose_flip_latency_s else 0.0
+    out["persist_pivot_to_neutral_p50_s"] = (
+        _percentile(sorted(pivot_to_neutral_s), 0.50) if pivot_to_neutral_s else 0.0
     )
-    out["persist_oppose_runs"] = oppose_run_starts
-    out["persist_oppose_half_life_rate"] = _ratio(len(oppose_half_life_s), oppose_run_starts)
-    out["persist_oppose_a_active_abs"] = PERSIST_A_ACTIVE_ABS
+    out["persist_pivot_to_neutral_p90_s"] = (
+        _percentile(sorted(pivot_to_neutral_s), 0.90) if pivot_to_neutral_s else 0.0
+    )
+    out["persist_pivot_runs"] = pivot_run_starts
+    out["persist_pivot_half_life_rate"] = _ratio(len(pivot_half_life_s), pivot_run_starts)
+    out["persist_pivot_to_neutral_rate"] = _ratio(len(pivot_to_neutral_s), pivot_run_starts)
+    out["persist_pivot_a_active_abs"] = pivot_active_abs
+    out["persist_pivot_neutral_zone_abs"] = pivot_neutral_zone_abs
+
+    out["persist_quiet_release_half_life_p50_s"] = (
+        _percentile(sorted(quiet_release_half_life_s), 0.50)
+        if quiet_release_half_life_s
+        else 0.0
+    )
+    out["persist_quiet_release_half_life_p90_s"] = (
+        _percentile(sorted(quiet_release_half_life_s), 0.90)
+        if quiet_release_half_life_s
+        else 0.0
+    )
+    out["persist_quiet_release_runs"] = quiet_release_starts
+    out["persist_quiet_release_half_life_rate"] = _ratio(
+        len(quiet_release_half_life_s),
+        quiet_release_starts,
+    )
 
     out["y_raw_disp_mismatch_rate"] = _ratio(
         y_raw_disp_mismatch, y_raw_disp_mismatch_total
@@ -1276,7 +1372,7 @@ def main() -> None:
 
     per_symbol_stats: dict[str, dict[str, object]] = {}
     for symbol, entries in sorted(grouped.items()):
-        stats = _stats_for_symbol(entries)
+        stats = _stats_for_symbol(entries, config=config_values)
         per_symbol_stats[symbol] = stats
         if symbol in majors:
             k_07_value = stats.get("k_reco_target_0.7", 0.0)
@@ -1422,15 +1518,21 @@ def main() -> None:
                 f"{stats['persist_stale_hold_runs']}\n"
             )
             handle.write(
-                "persist_oppose_half_life_p50_s/p90_s/flip_p50_s: "
-                f"{stats['persist_oppose_half_life_p50_s']:.1f}/"
-                f"{stats['persist_oppose_half_life_p90_s']:.1f}/"
-                f"{stats['persist_oppose_flip_latency_p50_s']:.1f}\n"
+                "persist_pivot_half_life_p50_s/p90_s/to_neutral_p50_s: "
+                f"{stats['persist_pivot_half_life_p50_s']:.1f}/"
+                f"{stats['persist_pivot_half_life_p90_s']:.1f}/"
+                f"{stats['persist_pivot_to_neutral_p50_s']:.1f}\n"
             )
             handle.write(
-                "persist_oppose_runs/half_life_rate: "
-                f"{stats['persist_oppose_runs']}/"
-                f"{stats['persist_oppose_half_life_rate']:.2f}\n"
+                "persist_pivot_runs/to_neutral_rate: "
+                f"{stats['persist_pivot_runs']}/"
+                f"{stats['persist_pivot_to_neutral_rate']:.2f}\n"
+            )
+            handle.write(
+                "persist_quiet_release_half_life_p50_s/p90_s/runs: "
+                f"{stats['persist_quiet_release_half_life_p50_s']:.1f}/"
+                f"{stats['persist_quiet_release_half_life_p90_s']:.1f}/"
+                f"{stats['persist_quiet_release_runs']}\n"
             )
             for key in (
                 "window_ms",
