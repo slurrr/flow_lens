@@ -19,6 +19,7 @@ class AdapterStatus(str, Enum):
 @dataclass(frozen=True)
 class AdapterEvent:
     symbol: str
+    base_symbol: str | None
     event: Event
 
 

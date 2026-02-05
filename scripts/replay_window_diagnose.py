@@ -113,6 +113,8 @@ def main() -> None:
                 record = json.loads(line)
                 if isinstance(record, dict) and "_meta" in record:
                     continue
+                if isinstance(record, dict) and "event_type" in record:
+                    continue
                 if not isinstance(record, dict):
                     continue
                 symbol = str(record.get("symbol", symbol_label)).upper()

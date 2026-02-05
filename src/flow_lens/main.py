@@ -20,7 +20,12 @@ from flow_lens.adapters import (
     BinanceSpotWSAdapter,
 )
 from flow_lens.config import AppConfig, load_app_config
-from flow_lens.engine.buffer import RollingEventBuffer
+from flow_lens.engine.buffer import (
+    PriceSourceMeta,
+    PriceSwitchEvent,
+    PriorityStickySelector,
+    RollingEventBuffer,
+)
 from flow_lens.engine.constants import (
     Binning,
     Defaults,
@@ -58,6 +63,17 @@ class RuntimeState:
     pending: dict[str, list[Event]]
     symbol_maps: SymbolMaps
     last_event_ms: dict[str, int | None]
+    source_meta: dict[str, PriceSourceMeta]
+    source_allowlists: dict[str, set[str] | None]
+    filter_reset_events: list["FilterContextResetEvent"]
+
+
+@dataclass(frozen=True)
+class FilterContextResetEvent:
+    symbol: str
+    old_mask: tuple[str, ...]
+    new_mask: tuple[str, ...]
+    reset_applied: tuple[str, ...]
 
 
 def main() -> None:
@@ -144,6 +160,7 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         ),
     )
     logging.info("Runtime config: %s", _runtime_config_map(config))
+    _log_source_registry(config)
     base_symbols = _collect_symbols(config)
 
     resolver = BinanceSymbolResolver()
@@ -153,22 +170,28 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     log_resolution("Perp", perp_resolution)
 
     symbol_maps = build_symbol_maps(spot_resolution, perp_resolution)
+    source_meta = _build_price_source_meta(config)
     queue_events: queue.Queue[AdapterEvent] = queue.Queue()
     supervisor = AdapterSupervisor(queue_events)
     supervisor.start(
         spot_symbols=_flatten(symbol_maps.spot_base_to_actual),
+        spot_symbol_to_base=symbol_maps.spot_actual_to_base,
         spot_quotes=symbol_maps.spot_actual_to_quote,
         quote_pairs=symbol_maps.quote_pairs,
         quote_rates=symbol_maps.quote_rates,
         perp_symbols=_flatten(symbol_maps.perp_base_to_actual),
+        perp_symbol_to_base=symbol_maps.perp_actual_to_base,
     )
 
     runtime = _init_runtime(
         base_symbols,
         window_ms,
         symbol_maps,
+        source_meta,
         defaults,
-        config.spot_price_stale_switch_ticks,
+        selector_stale_failover_ms=config.price_selector_stale_failover_ms,
+        selector_recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
+        selector_switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
     )
     input_state = InputState(symbols=base_symbols)
     renderer = Renderer(
@@ -279,6 +302,34 @@ def _collect_symbols(config: AppConfig) -> list[str]:
     return sorted(symbols)
 
 
+def _build_price_source_meta(config: AppConfig) -> dict[str, PriceSourceMeta]:
+    return {
+        source_id: PriceSourceMeta(
+            source_id=source_id,
+            market_type_for_x=source.market_type_for_x,
+            price_eligible=source.price_eligible,
+            price_priority=source.price_priority,
+        )
+        for source_id, source in config.sources.items()
+    }
+
+
+def _log_source_registry(config: AppConfig) -> None:
+    for source_id, source in sorted(config.sources.items()):
+        logging.info(
+            "Source registry %s: venue=%s class=%s market=%s price_eligible=%s "
+            "priority=%s aggressor_mode=%s quote_mode=%s",
+            source_id,
+            source.venue,
+            source.instrument_class,
+            source.market_type_for_x,
+            source.price_eligible,
+            source.price_priority,
+            source.capabilities.aggressor_mode,
+            source.capabilities.quote_mode,
+        )
+
+
 class AdapterSupervisor:
     def __init__(self, queue_events: queue.Queue[AdapterEvent]) -> None:
         self._queue_events = queue_events
@@ -294,39 +345,47 @@ class AdapterSupervisor:
         self,
         *,
         spot_symbols: list[str],
+        spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
         perp_symbols: list[str],
+        perp_symbol_to_base: dict[str, str],
     ) -> None:
         self._thread.start()
         self._ready.wait(timeout=5)
         self.update_symbols(
             spot_symbols=spot_symbols,
+            spot_symbol_to_base=spot_symbol_to_base,
             spot_quotes=spot_quotes,
             quote_pairs=quote_pairs,
             quote_rates=quote_rates,
             perp_symbols=perp_symbols,
+            perp_symbol_to_base=perp_symbol_to_base,
         )
 
     def update_symbols(
         self,
         *,
         spot_symbols: list[str],
+        spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
         perp_symbols: list[str],
+        perp_symbol_to_base: dict[str, str],
     ) -> None:
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(
             self._restart(
                 spot_symbols=spot_symbols,
+                spot_symbol_to_base=spot_symbol_to_base,
                 spot_quotes=spot_quotes,
                 quote_pairs=quote_pairs,
                 quote_rates=quote_rates,
                 perp_symbols=perp_symbols,
+                perp_symbol_to_base=perp_symbol_to_base,
             ),
             self._loop,
         )
@@ -341,19 +400,25 @@ class AdapterSupervisor:
         self,
         *,
         spot_symbols: list[str],
+        spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
         perp_symbols: list[str],
+        perp_symbol_to_base: dict[str, str],
     ) -> None:
         await self._cancel_tasks()
         spot = BinanceSpotWSAdapter(
             symbols=spot_symbols,
+            symbol_to_base=spot_symbol_to_base,
             symbol_quotes=spot_quotes,
             quote_pairs=quote_pairs,
             quote_rates=quote_rates,
         )
-        perp = BinancePerpWSAdapter(symbols=perp_symbols)
+        perp = BinancePerpWSAdapter(
+            symbols=perp_symbols,
+            symbol_to_base=perp_symbol_to_base,
+        )
         with self._lock:
             self.spot = spot
             self.perp = perp
@@ -383,18 +448,27 @@ def _init_runtime(
     symbols: list[str],
     window_ms: int,
     symbol_maps: SymbolMaps,
+    source_meta: dict[str, PriceSourceMeta],
     defaults: Defaults,
-    spot_price_stale_switch_ticks: int,
+    selector_stale_failover_ms: int,
+    selector_recovery_confirm_cycles: int,
+    selector_switch_cooldown_cycles: int,
 ) -> RuntimeState:
     loops: dict[str, EngineLoop] = {}
     last_state: dict[str, StateSnapshot | None] = {}
     pending: dict[str, list[Event]] = {symbol: [] for symbol in symbols}
     last_event_ms: dict[str, int | None] = {symbol: None for symbol in symbols}
+    source_allowlists: dict[str, set[str] | None] = {symbol: None for symbol in symbols}
 
     for symbol in symbols:
         buffer = RollingEventBuffer(
             window_delta_ms=window_ms,
-            spot_stale_switch_ticks=spot_price_stale_switch_ticks,
+            source_meta=source_meta,
+            price_selector=PriorityStickySelector(
+                stale_failover_ms=selector_stale_failover_ms,
+                recovery_confirm_cycles=selector_recovery_confirm_cycles,
+                switch_cooldown_cycles=selector_switch_cooldown_cycles,
+            ),
         )
         engine = StateEngine(defaults)
         loops[symbol] = EngineLoop(symbol=symbol, buffer=buffer, engine=engine)
@@ -406,6 +480,9 @@ def _init_runtime(
         pending=pending,
         symbol_maps=symbol_maps,
         last_event_ms=last_event_ms,
+        source_meta=source_meta,
+        source_allowlists=source_allowlists,
+        filter_reset_events=[],
     )
 
 
@@ -415,11 +492,51 @@ def _drain_events(queue_events: queue.Queue[AdapterEvent], runtime: RuntimeState
             item = queue_events.get_nowait()
         except queue.Empty:
             break
-        base_symbol = _map_to_base(item, runtime.symbol_maps)
+        base_symbol = item.base_symbol.upper() if item.base_symbol is not None else None
+        if base_symbol is None:
+            base_symbol = _legacy_map_to_base(item, runtime.symbol_maps)
         if base_symbol is None or base_symbol not in runtime.pending:
             continue
         runtime.pending[base_symbol].append(item.event)
         runtime.last_event_ms[base_symbol] = item.event.timestamp
+
+
+def _apply_source_filter(
+    runtime: RuntimeState,
+    *,
+    symbol: str,
+    source_allowlist: set[str] | None,
+) -> None:
+    old_allowlist = runtime.source_allowlists.get(symbol)
+    new_allowlist = set(source_allowlist) if source_allowlist is not None else None
+    old_key = tuple(sorted(old_allowlist)) if old_allowlist is not None else tuple()
+    new_key = tuple(sorted(new_allowlist)) if new_allowlist is not None else tuple()
+    if old_key == new_key:
+        return
+    loop = runtime.loops[symbol]
+    loop.source_allowlist = new_allowlist
+    loop.buffer.reset_context()
+    loop.engine.reset_context()
+    runtime.pending[symbol] = []
+    runtime.last_state[symbol] = None
+    runtime.last_event_ms[symbol] = None
+    runtime.source_allowlists[symbol] = new_allowlist
+    runtime.filter_reset_events.append(
+        FilterContextResetEvent(
+            symbol=symbol,
+            old_mask=old_key,
+            new_mask=new_key,
+            reset_applied=(
+                "rolling_buffer",
+                "normalization_scales",
+                "smoothing_state",
+                "persistence_state",
+                "price_selector_state",
+                "visual_bins",
+                "lean_state",
+            ),
+        )
+    )
 
 
 def _update_state(
@@ -436,11 +553,18 @@ def _update_state(
         window_override = tbt_windows.get(symbol)
         if events:
             state = loop.step(events, now_ms, window_override_ms=window_override)
+            switch_events = loop.buffer.pop_price_switch_events()
             runtime.last_state[symbol] = state
             if live_metrics is not None and state is not None:
                 live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
-                diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
+                diagnostics.log(
+                    symbol,
+                    runtime.last_state[symbol],
+                    now_ms,
+                    loop.buffer,
+                    switch_events=switch_events,
+                )
             continue
         last_event_ms = runtime.last_event_ms.get(symbol)
         if last_event_ms is None:
@@ -450,11 +574,22 @@ def _update_state(
             continue
         if now_ms - last_event_ms <= cutoff_ms:
             state = loop.step(events, now_ms, window_override_ms=window_override)
+            switch_events = loop.buffer.pop_price_switch_events()
             runtime.last_state[symbol] = state
             if live_metrics is not None and state is not None:
                 live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
-                diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
+                diagnostics.log(
+                    symbol,
+                    runtime.last_state[symbol],
+                    now_ms,
+                    loop.buffer,
+                    switch_events=switch_events,
+                )
+    if runtime.filter_reset_events and diagnostics is not None:
+        diagnostics.log_filter_resets(now_ms, runtime.filter_reset_events)
+    if runtime.filter_reset_events:
+        runtime.filter_reset_events.clear()
 
 
 def _adapter_status(
@@ -508,6 +643,7 @@ class DiagnosticLogger:
         self._base_path.parent.mkdir(exist_ok=True)
         self._file = self._open_new_file()
         self._write_config_meta(self._config)
+        self._write_inference_diagnostics_defaults(self._config)
 
     def _open_new_file(self) -> TextIO:
         suffix = f"-{self._run_id}-p{self._part:02d}.jsonl"
@@ -521,17 +657,70 @@ class DiagnosticLogger:
         self._file.write(json.dumps(meta, separators=(",", ":")) + "\n")
         self._file.flush()
 
+    def _write_inference_diagnostics_defaults(self, config: dict[str, object]) -> None:
+        sources = config.get("source_registry")
+        if not isinstance(sources, dict):
+            return
+        for source_id, details in sources.items():
+            if not isinstance(source_id, str) or not isinstance(details, dict):
+                continue
+            aggressor_mode = details.get("aggressor_mode")
+            record = {
+                "event_type": "inference_diagnostics",
+                "source_id": source_id,
+                "aggressor_mode": aggressor_mode,
+                "inferred_with_bbo_rate": 0.0,
+                "inferred_mid_fallback_rate": 0.0,
+                "inferred_tick_rule_fallback_rate": 0.0,
+                "unknown_side_rate": 0.0,
+                "bbo_age_ms_p50": 0.0,
+                "bbo_age_ms_p95": 0.0,
+            }
+            self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            self._line_count += 1
+        self._file.flush()
+
+    def _rotate_if_needed(self) -> None:
+        if self._line_count < self._max_lines:
+            return
+        self._file.close()
+        self._file = self._open_new_file()
+        # Re-emit runtime config for every rotated file to keep reports self-contained.
+        self._write_config_meta(self._config)
+        self._write_inference_diagnostics_defaults(self._config)
+
     def log(
         self,
         symbol: str,
         state: StateSnapshot | None,
         now_ms: int,
         buffer: RollingEventBuffer,
+        *,
+        switch_events: tuple[PriceSwitchEvent, ...] = (),
     ) -> None:
-        if state is None:
-            return
         symbol_upper = symbol.upper()
         if symbol_upper not in self._symbols:
+            return
+        if state is None:
+            for switch in switch_events:
+                switch_record = {
+                    "event_type": "price_source_switch",
+                    "ts_wall_ms": int(time.time() * 1000),
+                    "now_ms": now_ms,
+                    "symbol": symbol_upper,
+                    "from_source_id": switch.from_source_id,
+                    "to_source_id": switch.to_source_id,
+                    "reason": switch.reason,
+                    "staleness_from_ms": switch.staleness_from_ms,
+                    "staleness_to_ms": switch.staleness_to_ms,
+                    "priority_from": switch.priority_from,
+                    "priority_to": switch.priority_to,
+                    "selector_policy": switch.selector_policy,
+                }
+                self._file.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
+                self._line_count += 1
+            self._file.flush()
+            self._rotate_if_needed()
             return
         record = {
             "ts_wall_ms": int(time.time() * 1000),
@@ -541,6 +730,9 @@ class DiagnosticLogger:
             "window_seconds": state.window_seconds,
             "buffer_event_count": buffer.size,
             "tanh_k": self._tanh_k,
+            "active_price_source_id": state.active_price_source_id,
+            "selector_policy": state.selector_policy,
+            "price_series_side": state.price_series_side,
             "price_series_used": state.price_series_used,
             "spot_fresh": state.spot_fresh,
             "perp_fresh": state.perp_fresh,
@@ -615,17 +807,69 @@ class DiagnosticLogger:
         self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
         self._file.flush()
         self._line_count += 1
-        if self._line_count >= self._max_lines:
-            self._file.close()
-            self._file = self._open_new_file()
-            # Re-emit runtime config for every rotated file to keep reports self-contained.
-            self._write_config_meta(self._config)
+        for switch in switch_events:
+            switch_record = {
+                "event_type": "price_source_switch",
+                "ts_wall_ms": int(time.time() * 1000),
+                "now_ms": now_ms,
+                "symbol": symbol_upper,
+                "from_source_id": switch.from_source_id,
+                "to_source_id": switch.to_source_id,
+                "reason": switch.reason,
+                "staleness_from_ms": switch.staleness_from_ms,
+                "staleness_to_ms": switch.staleness_to_ms,
+                "priority_from": switch.priority_from,
+                "priority_to": switch.priority_to,
+                "selector_policy": switch.selector_policy,
+            }
+            self._file.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
+            self._line_count += 1
+        self._file.flush()
+        self._rotate_if_needed()
+
+    def log_filter_resets(
+        self,
+        now_ms: int,
+        events: list[FilterContextResetEvent],
+    ) -> None:
+        for event in events:
+            record = {
+                "event_type": "filter_context_reset",
+                "ts_wall_ms": int(time.time() * 1000),
+                "now_ms": now_ms,
+                "symbol": event.symbol,
+                "old_mask": list(event.old_mask),
+                "new_mask": list(event.new_mask),
+                "reset_applied": list(event.reset_applied),
+            }
+            self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            self._line_count += 1
+        self._file.flush()
+        self._rotate_if_needed()
 
 
 def _runtime_config_map(config: AppConfig) -> dict[str, object]:
+    source_registry = {
+        source_id: {
+            "venue": source.venue,
+            "instrument_class": source.instrument_class,
+            "market_type_for_x": source.market_type_for_x,
+            "price_eligible": source.price_eligible,
+            "price_priority": source.price_priority,
+            "has_size": source.capabilities.has_size,
+            "has_aggressor": source.capabilities.has_aggressor,
+            "aggressor_mode": source.capabilities.aggressor_mode,
+            "quote_mode": source.capabilities.quote_mode,
+        }
+        for source_id, source in config.sources.items()
+    }
     return {
         "update_window_seconds": config.update_window_seconds,
         "tbt_window_multiplier": config.tbt_window_multiplier,
+        "price_selector_policy": config.price_selector_policy,
+        "price_selector_stale_failover_ms": config.price_selector_stale_failover_ms,
+        "price_selector_recovery_confirm_cycles": config.price_selector_recovery_confirm_cycles,
+        "price_selector_switch_cooldown_cycles": config.price_selector_switch_cooldown_cycles,
         "tanh_k": config.tanh_k,
         "scale_window_seconds": config.scale_window_seconds,
         "persist_enabled": config.persist_enabled,
@@ -656,7 +900,6 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "effort_scale_percentile": config.effort_scale_percentile,
         "effort_scale_min_samples": config.effort_scale_min_samples,
         "size_scale_percentile": config.size_scale_percentile,
-        "spot_price_stale_switch_ticks": config.spot_price_stale_switch_ticks,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -677,6 +920,7 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "tui_frame_inset_px": config.tui_frame_inset_px,
         "tui_frame_band_inner": config.tui_frame_band_inner,
         "tui_frame_band_outer": config.tui_frame_band_outer,
+        "source_registry": source_registry,
     }
 
 
@@ -699,7 +943,7 @@ def _report_missing(
             logging.warning("%s perp symbols: %s", prefix, ",".join(missing))
 
 
-def _map_to_base(item: AdapterEvent, symbol_maps: SymbolMaps) -> str | None:
+def _legacy_map_to_base(item: AdapterEvent, symbol_maps: SymbolMaps) -> str | None:
     if item.event.source_id.startswith("binance_spot"):
         return symbol_maps.spot_actual_to_base.get(item.symbol)
     return symbol_maps.perp_actual_to_base.get(item.symbol)

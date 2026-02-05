@@ -22,6 +22,9 @@ class FlowFrame:
     price: float
     price_start: float
     window_seconds: float
+    active_price_source_id: str | None
+    selector_policy: str
+    price_series_side: str
     price_series_used: str
     spot_fresh: bool
     perp_fresh: bool

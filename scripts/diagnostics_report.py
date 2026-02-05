@@ -118,6 +118,8 @@ def _load_records(path: Path) -> list[dict]:
                 record = json.loads(line)
                 if isinstance(record, dict) and "_meta" in record:
                     continue
+                if isinstance(record, dict) and "event_type" in record:
+                    continue
                 records.append(record)
     except (EOFError, gzip.BadGzipFile, OSError) as exc:
         print(f"warning: skipping unreadable log {path} ({exc})", file=sys.stderr)
@@ -202,6 +204,10 @@ def _load_config_summary(path: Path) -> dict[str, object]:
     ordered_keys = [
         "update_window_seconds",
         "tbt_window_multiplier",
+        "price_selector_policy",
+        "price_selector_stale_failover_ms",
+        "price_selector_recovery_confirm_cycles",
+        "price_selector_switch_cooldown_cycles",
         "tanh_k",
         "scale_window_seconds",
         "persist_enabled",
@@ -232,7 +238,6 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "effort_scale_percentile",
         "effort_scale_min_samples",
         "size_scale_percentile",
-        "spot_price_stale_switch_ticks",
         "effort_floor_multiplier",
         "effort_floor_ticks",
         "smoothing_dominance_alpha",

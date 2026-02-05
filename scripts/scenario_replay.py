@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Iterable, Iterator, TextIO, cast
 
 from flow_lens.config import AppConfig, load_app_config
-from flow_lens.engine.buffer import RollingEventBuffer
+from flow_lens.engine.buffer import (
+    PriceSourceMeta,
+    PriceSwitchEvent,
+    PriorityStickySelector,
+    RollingEventBuffer,
+)
 from flow_lens.engine.constants import (
     Binning,
     Defaults,
@@ -279,6 +284,18 @@ def _build_defaults(config: AppConfig) -> Defaults:
     )
 
 
+def _build_price_source_meta(config: AppConfig) -> dict[str, PriceSourceMeta]:
+    return {
+        source_id: PriceSourceMeta(
+            source_id=source_id,
+            market_type_for_x=source.market_type_for_x,
+            price_eligible=source.price_eligible,
+            price_priority=source.price_priority,
+        )
+        for source_id, source in config.sources.items()
+    }
+
+
 def _open_output(path: Path) -> TextIO:
     if path.suffix == ".gz":
         return gzip.open(path, "wt", encoding="utf-8")
@@ -286,9 +303,27 @@ def _open_output(path: Path) -> TextIO:
 
 
 def _config_snapshot(config: AppConfig) -> dict[str, object]:
+    source_registry = {
+        source_id: {
+            "venue": source.venue,
+            "instrument_class": source.instrument_class,
+            "market_type_for_x": source.market_type_for_x,
+            "price_eligible": source.price_eligible,
+            "price_priority": source.price_priority,
+            "has_size": source.capabilities.has_size,
+            "has_aggressor": source.capabilities.has_aggressor,
+            "aggressor_mode": source.capabilities.aggressor_mode,
+            "quote_mode": source.capabilities.quote_mode,
+        }
+        for source_id, source in config.sources.items()
+    }
     return {
         "update_window_seconds": config.update_window_seconds,
         "tbt_window_multiplier": config.tbt_window_multiplier,
+        "price_selector_policy": config.price_selector_policy,
+        "price_selector_stale_failover_ms": config.price_selector_stale_failover_ms,
+        "price_selector_recovery_confirm_cycles": config.price_selector_recovery_confirm_cycles,
+        "price_selector_switch_cooldown_cycles": config.price_selector_switch_cooldown_cycles,
         "tanh_k": config.tanh_k,
         "scale_window_seconds": config.scale_window_seconds,
         "persist_enabled": config.persist_enabled,
@@ -319,7 +354,6 @@ def _config_snapshot(config: AppConfig) -> dict[str, object]:
         "effort_scale_percentile": config.effort_scale_percentile,
         "effort_scale_min_samples": config.effort_scale_min_samples,
         "size_scale_percentile": config.size_scale_percentile,
-        "spot_price_stale_switch_ticks": config.spot_price_stale_switch_ticks,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -330,6 +364,7 @@ def _config_snapshot(config: AppConfig) -> dict[str, object]:
         "binning_dot_size_thresholds": config.binning_dot_size_thresholds,
         "binning_halo_thresholds": config.binning_halo_thresholds,
         "binning_hysteresis_band": config.binning_hysteresis_band,
+        "source_registry": source_registry,
     }
 
 
@@ -337,11 +372,19 @@ def _effective_config_snapshot(
     defaults: Defaults,
     *,
     tbt_window_multiplier: float,
-    spot_price_stale_switch_ticks: int,
+    price_selector_policy: str,
+    price_selector_stale_failover_ms: int,
+    price_selector_recovery_confirm_cycles: int,
+    price_selector_switch_cooldown_cycles: int,
+    source_registry: dict[str, object],
 ) -> dict[str, object]:
     return {
         "update_window_seconds": defaults.time_domain.update_window_seconds,
         "tbt_window_multiplier": tbt_window_multiplier,
+        "price_selector_policy": price_selector_policy,
+        "price_selector_stale_failover_ms": price_selector_stale_failover_ms,
+        "price_selector_recovery_confirm_cycles": price_selector_recovery_confirm_cycles,
+        "price_selector_switch_cooldown_cycles": price_selector_switch_cooldown_cycles,
         "tanh_k": defaults.effectiveness_scaling.tanh_k,
         "scale_window_seconds": defaults.input_normalization.scale_window_seconds,
         "persist_enabled": defaults.persistence.enabled,
@@ -372,7 +415,6 @@ def _effective_config_snapshot(
         "effort_scale_percentile": defaults.effort_scale.percentile,
         "effort_scale_min_samples": defaults.effort_scale.min_samples,
         "size_scale_percentile": defaults.size_scale.percentile,
-        "spot_price_stale_switch_ticks": spot_price_stale_switch_ticks,
         "effort_floor_multiplier": defaults.effort_floor.multiplier_alpha,
         "effort_floor_ticks": defaults.effort_floor.rolling_window_ticks,
         "smoothing_dominance_alpha": defaults.smoothing.dominance_alpha,
@@ -383,6 +425,7 @@ def _effective_config_snapshot(
         "binning_dot_size_thresholds": defaults.binning.dot_size_thresholds,
         "binning_halo_thresholds": defaults.binning.halo_thresholds,
         "binning_hysteresis_band": defaults.binning.hysteresis_band,
+        "source_registry": source_registry,
     }
 
 
@@ -427,6 +470,24 @@ def _write_meta(
         }
     }
     handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    source_registry = config_effective.get("source_registry")
+    if not isinstance(source_registry, dict):
+        return
+    for source_id, details in source_registry.items():
+        if not isinstance(source_id, str) or not isinstance(details, dict):
+            continue
+        record = {
+            "event_type": "inference_diagnostics",
+            "source_id": source_id,
+            "aggressor_mode": details.get("aggressor_mode"),
+            "inferred_with_bbo_rate": 0.0,
+            "inferred_mid_fallback_rate": 0.0,
+            "inferred_tick_rule_fallback_rate": 0.0,
+            "unknown_side_rate": 0.0,
+            "bbo_age_ms_p50": 0.0,
+            "bbo_age_ms_p95": 0.0,
+        }
+        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def _log_record(
@@ -437,6 +498,7 @@ def _log_record(
     now_ms: int,
     buffer: RollingEventBuffer,
     tanh_k: float,
+    switch_events: tuple[PriceSwitchEvent, ...] = (),
 ) -> None:
     record = {
         "ts_wall_ms": now_ms,
@@ -446,6 +508,9 @@ def _log_record(
         "window_seconds": state.window_seconds,
         "buffer_event_count": buffer.size,
         "tanh_k": tanh_k,
+        "active_price_source_id": state.active_price_source_id,
+        "selector_policy": state.selector_policy,
+        "price_series_side": state.price_series_side,
         "price_series_used": state.price_series_used,
         "spot_fresh": state.spot_fresh,
         "perp_fresh": state.perp_fresh,
@@ -518,6 +583,47 @@ def _log_record(
         "persist_neutral_dir_abs_persist": state.persist_neutral_dir_abs_persist,
     }
     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    for switch in switch_events:
+        switch_record = {
+            "event_type": "price_source_switch",
+            "ts_wall_ms": now_ms,
+            "now_ms": now_ms,
+            "symbol": symbol,
+            "from_source_id": switch.from_source_id,
+            "to_source_id": switch.to_source_id,
+            "reason": switch.reason,
+            "staleness_from_ms": switch.staleness_from_ms,
+            "staleness_to_ms": switch.staleness_to_ms,
+            "priority_from": switch.priority_from,
+            "priority_to": switch.priority_to,
+            "selector_policy": switch.selector_policy,
+        }
+        handle.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
+
+
+def _log_switch_only(
+    handle: TextIO,
+    *,
+    symbol: str,
+    now_ms: int,
+    switch_events: tuple[PriceSwitchEvent, ...],
+) -> None:
+    for switch in switch_events:
+        switch_record = {
+            "event_type": "price_source_switch",
+            "ts_wall_ms": now_ms,
+            "now_ms": now_ms,
+            "symbol": symbol,
+            "from_source_id": switch.from_source_id,
+            "to_source_id": switch.to_source_id,
+            "reason": switch.reason,
+            "staleness_from_ms": switch.staleness_from_ms,
+            "staleness_to_ms": switch.staleness_to_ms,
+            "priority_from": switch.priority_from,
+            "priority_to": switch.priority_to,
+            "selector_policy": switch.selector_policy,
+        }
+        handle.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
 
 
 def _iter_chunks(data_dir: Path) -> list[ChunkFile]:
@@ -655,12 +761,20 @@ def main() -> None:
         raise SystemExit("No backfill files found.")
 
     config = load_app_config(args.config)
+    source_meta = _build_price_source_meta(config)
     defaults = _build_defaults(config)
     config_requested = _config_snapshot(config)
+    requested_source_registry = config_requested.get("source_registry")
+    if not isinstance(requested_source_registry, dict):
+        raise SystemExit("Replay config snapshot missing source_registry.")
     config_effective = _effective_config_snapshot(
         defaults,
         tbt_window_multiplier=config.tbt_window_multiplier,
-        spot_price_stale_switch_ticks=config.spot_price_stale_switch_ticks,
+        price_selector_policy=config.price_selector_policy,
+        price_selector_stale_failover_ms=config.price_selector_stale_failover_ms,
+        price_selector_recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
+        price_selector_switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
+        source_registry=requested_source_registry,
     )
     _verify_replay_config_parity(config_requested, config_effective)
     out_dir = Path(args.out_dir)
@@ -723,7 +837,12 @@ def main() -> None:
 
         buffer = RollingEventBuffer(
             window_delta_ms=fallback_window_ms,
-            spot_stale_switch_ticks=config.spot_price_stale_switch_ticks,
+            source_meta=source_meta,
+            price_selector=PriorityStickySelector(
+                stale_failover_ms=config.price_selector_stale_failover_ms,
+                recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
+                switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
+            ),
         )
         engine = StateEngine(defaults)
         loop = EngineLoop(symbol=base_symbol, buffer=buffer, engine=engine)
@@ -809,11 +928,14 @@ def main() -> None:
                 if replay_events:
                     events = [item.event for item in replay_events]
                     state = loop.step(events, now_ms, window_override_ms=window_override_ms)
+                    switch_events = buffer.pop_price_switch_events()
                 else:
                     if last_event_ms is None or now_ms - last_event_ms > cutoff_ms:
                         state = None
+                        switch_events = tuple()
                     else:
                         state = loop.step((), now_ms, window_override_ms=window_override_ms)
+                        switch_events = buffer.pop_price_switch_events()
 
                 if state is not None:
                     _log_record(
@@ -823,6 +945,14 @@ def main() -> None:
                         now_ms=now_ms,
                         buffer=buffer,
                         tanh_k=defaults.effectiveness_scaling.tanh_k,
+                        switch_events=switch_events,
+                    )
+                elif switch_events:
+                    _log_switch_only(
+                        handle,
+                        symbol=base_symbol,
+                        now_ms=now_ms,
+                        switch_events=switch_events,
                     )
                 now_ms += update_ms
 

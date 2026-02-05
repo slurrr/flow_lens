@@ -18,11 +18,15 @@ class BinanceSpotWSAdapter(BaseAdapter):
         self,
         *,
         symbols: list[str],
+        symbol_to_base: dict[str, str],
         symbol_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
     ) -> None:
         super().__init__(symbols=symbols)
+        self._symbol_to_base = {
+            symbol.upper(): base.upper() for symbol, base in symbol_to_base.items()
+        }
         self._symbol_quotes = {symbol.upper(): quote.upper() for symbol, quote in symbol_quotes.items()}
         self._quote_pairs = {quote.upper(): pair for quote, pair in quote_pairs.items()}
         self._quote_pair_by_symbol = {
@@ -87,6 +91,10 @@ class BinanceSpotWSAdapter(BaseAdapter):
                     )
                     self._mark_event(symbol, timestamp)
                     self._mark_message(dropped=False)
-                    yield AdapterEvent(symbol=symbol, event=event)
+                    yield AdapterEvent(
+                        symbol=symbol,
+                        base_symbol=self._symbol_to_base.get(symbol_upper),
+                        event=event,
+                    )
             finally:
                 self._mark_disconnected()
