@@ -30,4 +30,4 @@ This keeps adapters simple and allows the engine to:
 
 ## Status
 
-Accepted (Amended by FL-0049)
+Accepted (Amended by FL-0049 and FL-0057)

@@ -8,3 +8,4 @@ __pycache__/
 
 logs/
 docs/diagnostics/scenario_runs
+docs/diagnostics

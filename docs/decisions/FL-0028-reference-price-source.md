@@ -13,4 +13,4 @@ Spot price better reflects actual asset transfer. Perp price is used only when s
 
 ## Status
 
-Accepted
+Superseded by FL-0052 (stale-tick hysteresis) and FL-0060 (multi-source selector policy).

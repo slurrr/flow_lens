@@ -12,4 +12,4 @@ Single-tick freshness switching causes noisy spot/perp ping-pong and inflates pr
 
 ## Status
 
-Accepted
+Accepted for single-venue baseline; superseded in multi-source scope by FL-0060.

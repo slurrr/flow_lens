@@ -55,6 +55,40 @@ Volume alone is insufficient. A venue can be huge but lagging.
 
 ## 3) Measurement design (rank influence empirically)
 
+### 3.0 Candidate narrowing (permissive, ranked pre-filter)
+
+Before running the full pairwise discovery tournament, we do a **permissive, ranked pre-filter** using top-of-book
+(L1) quality metrics.
+
+Intent:
+
+- This is **not** the Influence Order and does not “decide who leads”.
+- It answers a narrower question: “which venues are even plausible leaders at 0–2s horizons?”
+- The output is a **ranked list** plus a “keep set”. We keep broadly (permissive) and only demote obvious non-candidates.
+
+Why L1 helps:
+
+- Venues with consistently stale/wide/low-activity L1 are structurally unlikely to be first movers in short-horizon moves.
+
+What L1 cannot do:
+
+- It cannot prove discovery leadership (arbitrage mirroring can look very “active”).
+- It must not be used as the final decision; the pairwise tournament is required.
+
+Recommended L1 capture and metrics (BTC and SOL separately):
+
+- Capture window: 15–30 minutes per session, across multiple sessions (US/EU/Asia).
+- Per venue feed:
+  - `l1_updates_per_s`
+  - `median_spread_bps` and `p95_spread_bps`
+  - `staleness_rate` (fraction of gaps > 1s and > 2s)
+  - optional: `mid_move_latency_ms` relative to a robust composite mid (used carefully; can be contaminated by local latency)
+
+Ranking output:
+
+- “Discovery capacity” rank per venue (higher is “more plausible leader”), plus raw metric table.
+- The keep set should remain broad (permissive): default to “keep all” unless a venue is clearly stale/illiquid.
+
 ### 3.1 Primary score: price discovery lead score
 
 For each candidate venue V, symbol S (BTC, SOL), and sampling window W:
@@ -166,6 +200,8 @@ Notes:
 
 - Deribit is prioritized for relevance to “volume that matters”, even if implementation is harder.
 - Hyperliquid can be evaluated as a candidate if its lead score is non-trivial on BTC/SOL at 0–4s horizons.
+- TradFi (watchlist): CME (BTC/ETH futures; and planned 24/7 products) is under consideration for US-hours leadership
+  relevance, but postponed for now due to access/subscription constraints and session differences vs crypto venues.
 
 ---
 
