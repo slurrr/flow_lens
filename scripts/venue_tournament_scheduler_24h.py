@@ -180,28 +180,71 @@ def main() -> int:
     parser.add_argument("--out-root", default="logs/venue_tournament_scheduled", help="Root directory for scheduled outputs.")
     parser.add_argument("--diagnostics-root", default="docs/diagnostics/venue_tournament_scheduled", help="Root for tournament reports.")
     parser.add_argument(
+        "--hyperliquid-ts-mode",
+        choices=["recv", "venue"],
+        default="venue",
+        help=(
+            "How to populate ts_exchange_ms for hyperliquid_perp in the capture logs. "
+            "Use 'venue' (default) to keep the Hyperliquid-provided timestamp as ts_exchange_ms; "
+            "use 'recv' to force local receive time into ts_exchange_ms."
+        ),
+    )
+    parser.add_argument(
+        "--hyperliquid-transport",
+        choices=["sdk", "raw"],
+        default="sdk",
+        help="How to connect for hyperliquid_perp during capture (default: sdk).",
+    )
+    parser.add_argument(
+        "--analysis-phase",
+        choices=["inline", "deferred", "none"],
+        default="deferred",
+        help=(
+            "When to run tournament analysis. "
+            "'inline' runs analysis immediately after each capture (can cause missed blocks if analysis runs long). "
+            "'deferred' (default) captures all blocks first, then runs analysis after the schedule finishes. "
+            "'none' captures only (analysis can be run later)."
+        ),
+    )
+    parser.add_argument(
         "--anchor-hhmm",
-        default="16:00",
-        help="Anchor start time in MST for the 24h pass (default: 16:00).",
+        default="22:00",
+        help="Anchor start time in MST for the 24h pass (default: 22:00).",
     )
     parser.add_argument(
         "--allowed-days",
-        default="sun,mon,wed,fri",
-        help="Comma-separated allowed anchor days (default: sun,mon,wed,fri).",
+        default="sat,sun,tue,thu",
+        help=(
+            "Comma-separated allowed anchor days (default: sat,sun,tue,thu). "
+            "Note: with the 22:00 MST anchor, these starts capture most of the next day's windows "
+            "(Sat→Sun, Sun→Mon, Tue→Wed, Thu→Fri)."
+        ),
     )
     parser.add_argument("--force", action="store_true", help="Run even if anchor day is not in allowed-days.")
     parser.add_argument("--dry-run", action="store_true", help="Print schedule and exit.")
     parser.add_argument("--slice-minutes", type=int, default=60, help="Slice size minutes for per-block analysis (default: 60).")
     parser.add_argument("--slice-step-minutes", type=int, default=30, help="Slice step minutes for per-block analysis (default: 30).")
+    parser.add_argument(
+        "--write-run-summary",
+        action="store_true",
+        help="Write run summary files at end of analysis phase (default: enabled; use --no-write-run-summary to disable).",
+    )
+    parser.add_argument(
+        "--no-write-run-summary",
+        action="store_false",
+        dest="write_run_summary",
+        help="Disable writing run summary files at end of analysis phase.",
+    )
+    parser.set_defaults(write_run_summary=True)
     args = parser.parse_args()
 
     anchor_h, anchor_m = _parse_hhmm(str(args.anchor_hhmm))
     now = datetime.now(_MST)
     anchor_day = date(now.year, now.month, now.day)
+    # Use the most recent occurrence of the anchor time (today). This allows late starts
+    # to still run the remaining blocks in the current 24h plan window instead of rolling
+    # anchor to tomorrow and waiting ~24h.
     anchor_dt = datetime(anchor_day.year, anchor_day.month, anchor_day.day, anchor_h, anchor_m, tzinfo=_MST)
-    if now > anchor_dt + timedelta(minutes=10):
-        anchor_day = anchor_day + timedelta(days=1)
-        anchor_dt = datetime(anchor_day.year, anchor_day.month, anchor_day.day, anchor_h, anchor_m, tzinfo=_MST)
 
     allowed = {x.strip().lower() for x in str(args.allowed_days).split(",") if x.strip()}
     anchor_day_name = _allowed_day_name(anchor_dt)
@@ -246,6 +289,9 @@ def main() -> int:
     python = sys.executable
     capture_script = str(Path("scripts") / "venue_trades_capture.py")
     tournament_script = str(Path("scripts") / "venue_discovery_tournament_trades.py")
+    run_summary_script = str(Path("scripts") / "venue_tournament_run_summary.py")
+
+    captured: list[tuple[Block, datetime, datetime, Path, int, int]] = []
 
     for block, start_dt, end_dt in schedule:
         now_dt = datetime.now(_MST)
@@ -276,6 +322,10 @@ def main() -> int:
             str(duration_s),
             "--out-root",
             str(block_root),
+            "--hyperliquid-ts-mode",
+            str(args.hyperliquid_ts_mode),
+            "--hyperliquid-transport",
+            str(args.hyperliquid_transport),
         ]
         if args.gzip:
             capture_argv.append("--gzip")
@@ -286,6 +336,15 @@ def main() -> int:
         cap_created_ms, cap_stop_ms = _read_capture_meta_ms(capture_path)
         print(f"capture done: {block.label} input={capture_path}")
 
+        captured.append((block, start_dt, end_dt, capture_path, cap_created_ms, cap_stop_ms))
+
+        if str(args.analysis_phase) == "none":
+            continue
+
+        if str(args.analysis_phase) == "deferred":
+            # Capture is the priority. Defer analysis so we don't miss subsequent blocks.
+            continue
+
         # All-up block reports + sliced "bookend" reports.
         slices = _slice_ranges(start_dt, end_dt, slice_minutes=int(args.slice_minutes), step_minutes=int(args.slice_step_minutes))
         if not slices:
@@ -294,14 +353,10 @@ def main() -> int:
         if not slices:
             slices = [(start_dt, end_dt)]
 
-        for timebase in ("exchange", "recv", "exchange_local"):
-            # All-up report
-            out_all = diag_root / f"{block.label}_tb_{timebase}_all.txt"
-            _run_cmd([python, tournament_script, "--input", str(capture_path), "--timebase", timebase, "--out", str(out_all)])
-
-            # Slices: 60m slices with 30m step (default)
-            for idx, (s0, s1) in enumerate(slices, start=1):
-                out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
+        if str(args.analysis_phase) == "inline":
+            for timebase in ("exchange", "recv", "exchange_local"):
+                # All-up report
+                out_all = diag_root / f"{block.label}_tb_{timebase}_all.txt"
                 _run_cmd(
                     [
                         python,
@@ -310,18 +365,91 @@ def main() -> int:
                         str(capture_path),
                         "--timebase",
                         timebase,
-                        "--start-ms",
-                        str(_epoch_ms(s0)),
-                        "--end-ms",
-                        str(_epoch_ms(s1)),
                         "--out",
-                        str(out_slice),
+                        str(out_all),
                     ]
                 )
 
-        print(f"reports done: {block.label} outputs={diag_root}")
+                # Slices: 60m slices with 30m step (default)
+                for idx, (s0, s1) in enumerate(slices, start=1):
+                    out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
+                    _run_cmd(
+                        [
+                            python,
+                            tournament_script,
+                            "--input",
+                            str(capture_path),
+                            "--timebase",
+                            timebase,
+                            "--start-ms",
+                            str(_epoch_ms(s0)),
+                            "--end-ms",
+                            str(_epoch_ms(s1)),
+                            "--out",
+                            str(out_slice),
+                        ]
+                    )
+
+            print(f"reports done: {block.label} outputs={diag_root}")
 
     print(f"done: {run_id}")
+
+    if str(args.analysis_phase) == "deferred" and captured:
+        print(f"analysis start (deferred): blocks={len(captured)} outputs={diag_root}")
+        for block, start_dt, end_dt, capture_path, cap_created_ms, cap_stop_ms in captured:
+            slices = _slice_ranges(
+                start_dt,
+                end_dt,
+                slice_minutes=int(args.slice_minutes),
+                step_minutes=int(args.slice_step_minutes),
+            )
+            if not slices:
+                slices = [(start_dt, end_dt)]
+            slices = _clamp_slices(slices, clamp_start_ms=cap_created_ms, clamp_end_ms=cap_stop_ms)
+            if not slices:
+                slices = [(start_dt, end_dt)]
+
+            for timebase in ("exchange", "recv", "exchange_local"):
+                out_all = diag_root / f"{block.label}_tb_{timebase}_all.txt"
+                _run_cmd(
+                    [
+                        python,
+                        tournament_script,
+                        "--input",
+                        str(capture_path),
+                        "--timebase",
+                        timebase,
+                        "--out",
+                        str(out_all),
+                    ]
+                )
+                for idx, (s0, s1) in enumerate(slices, start=1):
+                    out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
+                    _run_cmd(
+                        [
+                            python,
+                            tournament_script,
+                            "--input",
+                            str(capture_path),
+                            "--timebase",
+                            timebase,
+                            "--start-ms",
+                            str(_epoch_ms(s0)),
+                            "--end-ms",
+                            str(_epoch_ms(s1)),
+                            "--out",
+                            str(out_slice),
+                        ]
+                    )
+            print(f"reports done (deferred): {block.label}")
+
+        print(f"analysis done (deferred): outputs={diag_root}")
+
+    if str(args.analysis_phase) in ("inline", "deferred") and bool(args.write_run_summary):
+        print("run summary start")
+        for timebase in ("exchange_local", "exchange", "recv"):
+            _run_cmd([python, run_summary_script, "--run-dir", str(diag_root), "--timebase", timebase])
+        print(f"run summary done: outputs={diag_root}")
     return 0
 
 

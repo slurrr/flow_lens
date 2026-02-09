@@ -1,66 +1,19 @@
 [adapters.binance_spot]
 type = "binance_spot_ws"
 symbols = [
-  "ASTER",
-  "ZEC",
-  "NEAR",
-  "FIL",
-  "XPL",
-  "AAVE",
-  "USELESS",
-  "SOL",
-  "PUMP",
-  "LINEA",
-  "EIGEN",
-  "ONDO",
-  "LINK",
-  "OP",
-  "LTC",
-  "PEPE",
-  "FLOKI",
-  "DOGE",
-  "SHIB",
-  "AVAX",
-  "BNB",
   "BTC",
-  "ETH",
-  "HYPE",
 ]
 
 [adapters.binance_perp]
 type = "binance_perp_ws"
 symbols = [
-  "ASTER",
-  "ZEC",
-  "NEAR",
-  "FIL",
-  "XPL",
-  "AAVE",
-  "USELESS",
-  "SOL",
-  "PUMP",
-  "LINEA",
-  "EIGEN",
-  "ONDO",
-  "LINK",
-  "OP",
-  "LTC",
-  "PEPE",
-  "FLOKI",
-  "DOGE",
-  "SHIB",
-  "AVAX",
-  "BNB",
   "BTC",
-  "ETH",
-  "HYPE",
 ]
 
 [adapters.coinbase_spot]
 type = "coinbase_spot_ws"
 symbols = [
   "BTC",
-  "SOL",
 ]
 
 [sources.binance_spot]
@@ -98,14 +51,15 @@ quote_mode = "usd_like"
 
 [runtime]
 tbt_window_multiplier = 4.0
-update_window_seconds = 1.0
+update_window_seconds = 0.69
+
 price_selector_policy = "priority_sticky"
 price_selector_stale_failover_ms = 6000
 price_selector_recovery_confirm_cycles = 2
 price_selector_switch_cooldown_cycles = 1
 
-smoothing_dominance_alpha = 0.15
-smoothing_effectiveness_alpha = 0.15
+smoothing_dominance_alpha = 0.12        # 0.15
+smoothing_effectiveness_alpha = 0.1    # 0.15
 
 dispersion_metric = "hill"
 halo_growth_rate = 0.10
@@ -115,25 +69,25 @@ binning_dot_size_thresholds = [0.35, 0.70]
 binning_halo_thresholds = [0.33, 0.66]
 binning_hysteresis_band = 0.05
 
-tanh_k = 0.30
+tanh_k = 0.38
 
-scale_window_seconds = 420.0
+scale_window_seconds = 300.0
 
 persist_enabled = true
 persist_input = "y_gated"
 persist_input_deadband = 0.0
 persist_neutral_dir_abs_flash = 0.05
 persist_neutral_dir_abs_persist = 0.08
-persist_tau_eff_active = 12.0
-persist_tau_dir_active = 14.0
+persist_tau_eff_active = 10.0
+persist_tau_dir_active = 12.0
 persist_pivot_active_abs = 0.10
-persist_pivot_confirm_s = 6.0
+persist_pivot_confirm_s = 4.0
 persist_pivot_neutralize_tau = 3.0
 persist_pivot_neutral_zone_abs = 0.08
-persist_rebuild_confirm_s = 4.0
-persist_pivot_cooldown_s = 10.0
+persist_rebuild_confirm_s = 3.0
+persist_pivot_cooldown_s = 8.0
 persist_pivot_max_s = 18.0
-persist_max_delta_s_eff_per_second = 0.4
+persist_max_delta_s_eff_per_second = 0.5
 persist_tau_dir_pivot = 4.0
 persist_dormant_quiet_abs = 0.04
 persist_dormant_active_abs = 0.08
@@ -141,17 +95,17 @@ persist_dormant_quiet_s = 20.0
 persist_tau_dormant = 45.0
 persist_dormant_effort_norm_threshold = 0.35
 
-disp_scale_multiplier = 0.10    # deadband 0.10
+disp_scale_multiplier = 0.12    # deadband 0.10
 disp_scale_percentile = 0.80
 disp_scale_min_samples = 20
 disp_scale_floor_percentile = 0.0
 
-effort_scale_percentile = 0.5
+effort_scale_percentile = 0.45
 effort_scale_min_samples = 20
-size_scale_percentile = 0.5
+size_scale_percentile = 0.45
 
 effort_floor_multiplier = 0.15    # 0.15
-effort_floor_ticks = 60
+effort_floor_ticks = 45
 
 # ---- TUI styling (Braille lens) ----
 # Lens box size bounds in terminal cells (odd values center axes cleanly).

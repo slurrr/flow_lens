@@ -9,11 +9,13 @@ import json
 import random
 import ssl
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import websockets
+from hyperliquid.info import Info
 
 
 @dataclass(frozen=True)
@@ -31,10 +33,83 @@ class TradePrint:
     market_type: str
     base_symbol: str
     ts_exchange_ms: int
+    ts_venue_ms: int | None
     ts_recv_ms: int
     price: float
     size: float  # base qty when available; else 0
     notional: float  # price * size when available; else 0
+
+
+class _DedupeState:
+    def __init__(self, *, max_size: int) -> None:
+        self._max_size = max_size
+        self._q: deque[tuple[int, str, str]] = deque()
+        self._s: set[tuple[int, str, str]] = set()
+
+    def should_emit(self, sig: tuple[int, str, str]) -> bool:
+        if sig in self._s:
+            return False
+        self._s.add(sig)
+        self._q.append(sig)
+        while len(self._q) > self._max_size:
+            old = self._q.popleft()
+            self._s.discard(old)
+        return True
+
+
+def _tradeprint_from_hyperliquid_row(
+    candidate: Candidate,
+    row: dict[str, Any],
+    *,
+    recv_ms: int,
+    hyperliquid_ts_mode: str,
+    dedupe: _DedupeState,
+) -> TradePrint | None:
+    base_symbol = candidate.base_symbol
+    if row.get("coin") != base_symbol:
+        return None
+    px_raw = row.get("px")
+    sz_raw = row.get("sz")
+    price = _as_float(px_raw)
+    qty = _as_float(sz_raw)
+    if price is None:
+        return None
+    try:
+        ts_venue_ms = int(row.get("time") or 0)
+    except (TypeError, ValueError):
+        ts_venue_ms = 0
+    if ts_venue_ms <= 0:
+        return None
+
+    sig = (
+        ts_venue_ms,
+        str(row.get("hash") or row.get("tid") or row.get("tradeId") or ""),
+        f"{px_raw}:{sz_raw}:{row.get('side') or row.get('dir') or ''}",
+    )
+    if not dedupe.should_emit(sig):
+        return None
+
+    if hyperliquid_ts_mode == "venue":
+        ts_exchange_ms = ts_venue_ms
+    elif hyperliquid_ts_mode == "recv":
+        ts_exchange_ms = recv_ms
+    else:
+        raise ValueError(f"Invalid hyperliquid_ts_mode: {hyperliquid_ts_mode!r}")
+
+    q = float(qty) if qty is not None else 0.0
+    notional = float(price) * q if q > 0 else 0.0
+    return TradePrint(
+        candidate_id=candidate.candidate_id,
+        venue=candidate.venue,
+        market_type=candidate.market_type,
+        base_symbol=base_symbol,
+        ts_exchange_ms=ts_exchange_ms,
+        ts_venue_ms=ts_venue_ms,
+        ts_recv_ms=recv_ms,
+        price=float(price),
+        size=q,
+        notional=notional,
+    )
 
 
 def _now_ms() -> int:
@@ -264,6 +339,8 @@ def _trade_from_payload(
     payload: dict[str, Any],
     *,
     recv_ms: int,
+    hyperliquid_ts_mode: str,
+    hyperliquid_dedupe: _DedupeState | None,
 ) -> list[TradePrint]:
     venue = candidate.venue
     market_type = candidate.market_type
@@ -274,13 +351,14 @@ def _trade_from_payload(
     if venue == "binance":
         # aggTrade: {"T": <ms>, "p":"...", "q":"..."}
         try:
-            ts_exchange_ms = int(payload.get("T") or payload.get("E") or 0)
+            ts_venue_ms = int(payload.get("T") or payload.get("E") or 0)
             price = float(payload["p"])
             qty = float(payload["q"])
         except (KeyError, TypeError, ValueError):
             return []
-        if ts_exchange_ms <= 0:
-            ts_exchange_ms = recv_ms
+        if ts_venue_ms <= 0:
+            ts_venue_ms = None
+        ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
         notional = price * qty if qty > 0 else 0.0
         out.append(
             TradePrint(
@@ -289,6 +367,7 @@ def _trade_from_payload(
                 market_type=market_type,
                 base_symbol=base_symbol,
                 ts_exchange_ms=ts_exchange_ms,
+                ts_venue_ms=ts_venue_ms,
                 ts_recv_ms=recv_ms,
                 price=price,
                 size=qty,
@@ -306,13 +385,14 @@ def _trade_from_payload(
             if not isinstance(row, dict):
                 continue
             try:
-                ts_exchange_ms = int(row.get("ts") or 0)
+                ts_venue_ms = int(row.get("ts") or 0)
                 price = float(row["px"])
                 qty = float(row.get("sz") or 0.0)
             except (KeyError, TypeError, ValueError):
                 continue
-            if ts_exchange_ms <= 0:
-                ts_exchange_ms = recv_ms
+            if ts_venue_ms <= 0:
+                ts_venue_ms = None
+            ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
             notional = price * qty if qty > 0 else 0.0
             out.append(
                 TradePrint(
@@ -321,6 +401,7 @@ def _trade_from_payload(
                     market_type=market_type,
                     base_symbol=base_symbol,
                     ts_exchange_ms=ts_exchange_ms,
+                    ts_venue_ms=ts_venue_ms,
                     ts_recv_ms=recv_ms,
                     price=price,
                     size=qty,
@@ -345,11 +426,12 @@ def _trade_from_payload(
             if price is None:
                 continue
             try:
-                ts_exchange_ms = int(row.get("T") or payload.get("ts") or 0)
+                ts_venue_ms = int(row.get("T") or payload.get("ts") or 0)
             except (TypeError, ValueError):
-                ts_exchange_ms = recv_ms
-            if ts_exchange_ms <= 0:
-                ts_exchange_ms = recv_ms
+                ts_venue_ms = 0
+            if ts_venue_ms <= 0:
+                ts_venue_ms = None
+            ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
             q = float(qty) if qty is not None else 0.0
             notional = float(price) * q if q > 0 else 0.0
             out.append(
@@ -359,6 +441,7 @@ def _trade_from_payload(
                     market_type=market_type,
                     base_symbol=base_symbol,
                     ts_exchange_ms=ts_exchange_ms,
+                    ts_venue_ms=ts_venue_ms,
                     ts_recv_ms=recv_ms,
                     price=float(price),
                     size=q,
@@ -375,15 +458,16 @@ def _trade_from_payload(
         qty = _as_float(payload.get("size"))
         if price is None:
             return []
-        ts_exchange_ms = recv_ms
+        ts_venue_ms: int | None = None
         time_str = payload.get("time")
         if isinstance(time_str, str) and time_str.endswith("Z"):
             from datetime import datetime
 
             try:
-                ts_exchange_ms = int(datetime.fromisoformat(time_str.replace("Z", "+00:00")).timestamp() * 1000)
+                ts_venue_ms = int(datetime.fromisoformat(time_str.replace("Z", "+00:00")).timestamp() * 1000)
             except ValueError:
-                ts_exchange_ms = recv_ms
+                ts_venue_ms = None
+        ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
         q = float(qty) if qty is not None else 0.0
         notional = float(price) * q if q > 0 else 0.0
         out.append(
@@ -393,6 +477,7 @@ def _trade_from_payload(
                 market_type=market_type,
                 base_symbol=base_symbol,
                 ts_exchange_ms=ts_exchange_ms,
+                ts_venue_ms=ts_venue_ms,
                 ts_recv_ms=recv_ms,
                 price=float(price),
                 size=q,
@@ -416,11 +501,15 @@ def _trade_from_payload(
             if price is None:
                 continue
             try:
-                ts_exchange_ms = int(row.get("create_time_ms") or row.get("create_time") or 0)
+                raw_ts = int(row.get("create_time_ms") or row.get("create_time") or 0)
             except (TypeError, ValueError):
-                ts_exchange_ms = recv_ms
-            if ts_exchange_ms <= 0:
-                ts_exchange_ms = recv_ms
+                raw_ts = 0
+            if raw_ts <= 0:
+                ts_venue_ms = None
+            else:
+                # Gate sometimes provides seconds in create_time; normalize to ms if needed.
+                ts_venue_ms = raw_ts * 1000 if raw_ts < 10_000_000_000 else raw_ts
+            ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
             q = float(qty) if qty is not None else 0.0
             notional = float(price) * q if q > 0 else 0.0
             out.append(
@@ -430,6 +519,7 @@ def _trade_from_payload(
                     market_type=market_type,
                     base_symbol=base_symbol,
                     ts_exchange_ms=ts_exchange_ms,
+                    ts_venue_ms=ts_venue_ms,
                     ts_recv_ms=recv_ms,
                     price=float(price),
                     size=q,
@@ -452,7 +542,8 @@ def _trade_from_payload(
                 ts_ns = int(data.get("time") or 0)
             except (TypeError, ValueError):
                 ts_ns = 0
-            ts_exchange_ms = (ts_ns // 1_000_000) if ts_ns > 0 else recv_ms
+            ts_venue_ms = (ts_ns // 1_000_000) if ts_ns > 0 else None
+            ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
         else:
             # /contractMarket/execution: {"data":{"ts":<ns>,"price":"..","size":".."}}
             price = _as_float(data.get("price"))
@@ -463,7 +554,8 @@ def _trade_from_payload(
                 ts_ns = int(data.get("ts") or 0)
             except (TypeError, ValueError):
                 ts_ns = 0
-            ts_exchange_ms = (ts_ns // 1_000_000) if ts_ns > 0 else recv_ms
+            ts_venue_ms = (ts_ns // 1_000_000) if ts_ns > 0 else None
+            ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
 
         q = float(qty) if qty is not None else 0.0
         notional = float(price) * q if q > 0 else 0.0
@@ -474,6 +566,7 @@ def _trade_from_payload(
                 market_type=market_type,
                 base_symbol=base_symbol,
                 ts_exchange_ms=ts_exchange_ms,
+                ts_venue_ms=ts_venue_ms,
                 ts_recv_ms=recv_ms,
                 price=float(price),
                 size=q,
@@ -500,11 +593,12 @@ def _trade_from_payload(
             if price is None:
                 continue
             try:
-                ts_exchange_ms = int(row.get("timestamp") or 0)
+                ts_venue_ms = int(row.get("timestamp") or 0)
             except (TypeError, ValueError):
-                ts_exchange_ms = recv_ms
-            if ts_exchange_ms <= 0:
-                ts_exchange_ms = recv_ms
+                ts_venue_ms = 0
+            if ts_venue_ms <= 0:
+                ts_venue_ms = None
+            ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
             q = float(qty) if qty is not None else 0.0
             notional = float(price) * q if q > 0 else 0.0
             out.append(
@@ -514,6 +608,7 @@ def _trade_from_payload(
                     market_type=market_type,
                     base_symbol=base_symbol,
                     ts_exchange_ms=ts_exchange_ms,
+                    ts_venue_ms=ts_venue_ms,
                     ts_recv_ms=recv_ms,
                     price=float(price),
                     size=q,
@@ -525,39 +620,24 @@ def _trade_from_payload(
     if venue == "hyperliquid":
         if payload.get("channel") != "trades":
             return []
+        if hyperliquid_dedupe is None:
+            raise ValueError("hyperliquid_dedupe must be set for hyperliquid venue")
         data = payload.get("data")
         if not isinstance(data, list):
             return []
         for row in data:
             if not isinstance(row, dict):
                 continue
-            if row.get("coin") != base_symbol:
-                continue
-            price = _as_float(row.get("px"))
-            qty = _as_float(row.get("sz"))
-            if price is None:
-                continue
-            try:
-                ts_exchange_ms = int(row.get("time") or 0)
-            except (TypeError, ValueError):
-                ts_exchange_ms = recv_ms
-            if ts_exchange_ms <= 0:
-                ts_exchange_ms = recv_ms
-            q = float(qty) if qty is not None else 0.0
-            notional = float(price) * q if q > 0 else 0.0
-            out.append(
-                TradePrint(
-                    candidate_id=candidate.candidate_id,
-                    venue=venue,
-                    market_type=market_type,
-                    base_symbol=base_symbol,
-                    ts_exchange_ms=ts_exchange_ms,
-                    ts_recv_ms=recv_ms,
-                    price=float(price),
-                    size=q,
-                    notional=notional,
-                )
+            tp = _tradeprint_from_hyperliquid_row(
+                candidate,
+                row,
+                recv_ms=recv_ms,
+                hyperliquid_ts_mode=hyperliquid_ts_mode,
+                dedupe=hyperliquid_dedupe,
             )
+            if tp is None:
+                continue
+            out.append(tp)
         return out
 
     if venue == "upbit":
@@ -572,11 +652,12 @@ def _trade_from_payload(
         if price is None:
             return []
         try:
-            ts_exchange_ms = int(payload.get("trade_timestamp") or payload.get("timestamp") or 0)
+            ts_venue_ms = int(payload.get("trade_timestamp") or payload.get("timestamp") or 0)
         except (TypeError, ValueError):
-            ts_exchange_ms = recv_ms
-        if ts_exchange_ms <= 0:
-            ts_exchange_ms = recv_ms
+            ts_venue_ms = 0
+        if ts_venue_ms <= 0:
+            ts_venue_ms = None
+        ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
         q = float(qty) if qty is not None else 0.0
         notional = float(price) * q if q > 0 else 0.0
         out.append(
@@ -586,6 +667,7 @@ def _trade_from_payload(
                 market_type=market_type,
                 base_symbol=base_symbol,
                 ts_exchange_ms=ts_exchange_ms,
+                ts_venue_ms=ts_venue_ms,
                 ts_recv_ms=recv_ms,
                 price=float(price),
                 size=q,
@@ -602,6 +684,9 @@ async def _ws_run(
     *,
     out_queue: asyncio.Queue[TradePrint],
     stop_at_ms: int,
+    hyperliquid_ts_mode: str,
+    hyperliquid_debug_path: Path | None,
+    hyperliquid_debug_lock: asyncio.Lock | None,
 ) -> None:
     venue = candidate.venue
     market_type = candidate.market_type
@@ -610,6 +695,7 @@ async def _ws_run(
     subscribe_payload: object | None
     periodic_payload: object | None = None
     periodic_every_s = 0.0
+    hyperliquid_dedupe: _DedupeState | None = None
 
     if venue == "binance":
         stream = f"{_binance_symbol(base_symbol=base_symbol).lower()}@aggTrade"
@@ -651,6 +737,7 @@ async def _ws_run(
     elif venue == "hyperliquid":
         url = _hyperliquid_ws_url()
         subscribe_payload = {"method": "subscribe", "subscription": {"type": "trades", "coin": base_symbol}}
+        hyperliquid_dedupe = _DedupeState(max_size=200_000)
     elif venue == "upbit":
         url = _upbit_ws_url()
         code = _upbit_market_code(base_symbol=base_symbol)
@@ -659,8 +746,10 @@ async def _ws_run(
         raise ValueError(f"Unsupported venue: {venue}")
 
     backoff_s = 1.0
+    conn_id = 0
     while _now_ms() < stop_at_ms:
         try:
+            conn_id += 1
             async with websockets.connect(url, ping_interval=20, ping_timeout=10, open_timeout=5) as ws:
                 periodic_task: asyncio.Task[None] | None = None
                 try:
@@ -670,6 +759,24 @@ async def _ws_run(
                         periodic_task = asyncio.create_task(
                             _send_periodic(ws, payload=periodic_payload, every_s=periodic_every_s, stop_at_ms=stop_at_ms)
                         )
+
+                    last_hl_recv_ms: int | None = None
+                    if venue == "hyperliquid" and hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
+                        async with hyperliquid_debug_lock:
+                            with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
+                                f.write(
+                                    json.dumps(
+                                        {
+                                            "_event": "conn_open",
+                                            "conn_id": conn_id,
+                                            "candidate_id": candidate.candidate_id,
+                                            "base_symbol": base_symbol,
+                                            "ts_recv_ms": _now_ms(),
+                                        },
+                                        separators=(",", ":"),
+                                    )
+                                    + "\n"
+                                )
 
                     while _now_ms() < stop_at_ms:
                         raw = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -693,7 +800,72 @@ async def _ws_run(
                             continue
 
                         for event in events:
-                            for trade in _trade_from_payload(candidate, event, recv_ms=recv_ms):
+                            # Optional Hyperliquid message-level debugging:
+                            # trade feeds can be batchy, include recent-history snapshots, or resend prints.
+                            # We log per-message min/max venue timestamp for the coin, plus emitted count.
+                            hl_rows_for_coin = 0
+                            hl_min_venue_ms: int | None = None
+                            hl_max_venue_ms: int | None = None
+                            if (
+                                venue == "hyperliquid"
+                                and hyperliquid_debug_path is not None
+                                and hyperliquid_debug_lock is not None
+                                and event.get("channel") == "trades"
+                            ):
+                                data = event.get("data")
+                                if isinstance(data, list):
+                                    for row in data:
+                                        if not isinstance(row, dict):
+                                            continue
+                                        if row.get("coin") != base_symbol:
+                                            continue
+                                        hl_rows_for_coin += 1
+                                        try:
+                                            t = int(row.get("time") or 0)
+                                        except (TypeError, ValueError):
+                                            continue
+                                        if t <= 0:
+                                            continue
+                                        if hl_min_venue_ms is None or t < hl_min_venue_ms:
+                                            hl_min_venue_ms = t
+                                        if hl_max_venue_ms is None or t > hl_max_venue_ms:
+                                            hl_max_venue_ms = t
+
+                            trades = _trade_from_payload(
+                                candidate,
+                                event,
+                                recv_ms=recv_ms,
+                                hyperliquid_ts_mode=hyperliquid_ts_mode,
+                                hyperliquid_dedupe=hyperliquid_dedupe,
+                            )
+                            if venue == "hyperliquid" and hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
+                                gap_ms = (recv_ms - last_hl_recv_ms) if last_hl_recv_ms is not None else None
+                                last_hl_recv_ms = recv_ms
+                                async with hyperliquid_debug_lock:
+                                    with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
+                                        f.write(
+                                            json.dumps(
+                                                {
+                                                    "_event": "hl_msg",
+                                                    "conn_id": conn_id,
+                                                    "candidate_id": candidate.candidate_id,
+                                                    "base_symbol": base_symbol,
+                                                    "ts_recv_ms": recv_ms,
+                                                    "rows_for_coin": hl_rows_for_coin,
+                                                    "min_ts_venue_ms": hl_min_venue_ms,
+                                                    "max_ts_venue_ms": hl_max_venue_ms,
+                                                    "recv_minus_max_venue_ms": (recv_ms - hl_max_venue_ms)
+                                                    if hl_max_venue_ms is not None
+                                                    else None,
+                                                    "recv_gap_ms": gap_ms,
+                                                    "emitted_trades": len(trades),
+                                                },
+                                                separators=(",", ":"),
+                                            )
+                                            + "\n"
+                                        )
+
+                            for trade in trades:
                                 await out_queue.put(trade)
                 finally:
                     if periodic_task is not None:
@@ -703,6 +875,104 @@ async def _ws_run(
         except (asyncio.TimeoutError, OSError, websockets.WebSocketException):
             await asyncio.sleep(backoff_s)
             backoff_s = min(10.0, backoff_s * 1.7)
+
+
+async def _hyperliquid_sdk_run(
+    candidate: Candidate,
+    *,
+    out_queue: asyncio.Queue[TradePrint],
+    stop_at_ms: int,
+    hyperliquid_ts_mode: str,
+    hyperliquid_debug_path: Path | None,
+    hyperliquid_debug_lock: asyncio.Lock | None,
+) -> None:
+    loop = asyncio.get_running_loop()
+    dedupe = _DedupeState(max_size=200_000)
+    conn_id = 1
+
+    def on_msg(ws_msg: Any) -> None:
+        recv_ms = _now_ms()
+        if not isinstance(ws_msg, dict) or ws_msg.get("channel") != "trades":
+            return
+        data = ws_msg.get("data")
+        if not isinstance(data, list):
+            return
+
+        rows_for_coin = 0
+        min_ts_venue_ms: int | None = None
+        max_ts_venue_ms: int | None = None
+        emitted = 0
+
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            if row.get("coin") != candidate.base_symbol:
+                continue
+            rows_for_coin += 1
+            try:
+                t = int(row.get("time") or 0)
+            except (TypeError, ValueError):
+                t = 0
+            if t > 0:
+                if min_ts_venue_ms is None or t < min_ts_venue_ms:
+                    min_ts_venue_ms = t
+                if max_ts_venue_ms is None or t > max_ts_venue_ms:
+                    max_ts_venue_ms = t
+
+            tp = _tradeprint_from_hyperliquid_row(
+                candidate,
+                row,
+                recv_ms=recv_ms,
+                hyperliquid_ts_mode=hyperliquid_ts_mode,
+                dedupe=dedupe,
+            )
+            if tp is None:
+                continue
+            emitted += 1
+            try:
+                loop.call_soon_threadsafe(out_queue.put_nowait, tp)
+            except RuntimeError:
+                # Event loop closed.
+                return
+
+        if hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
+            # This callback runs on a thread owned by the SDK websocket manager.
+            payload = {
+                "_event": "hl_sdk_msg",
+                "conn_id": conn_id,
+                "candidate_id": candidate.candidate_id,
+                "base_symbol": candidate.base_symbol,
+                "ts_recv_ms": recv_ms,
+                "rows_for_coin": rows_for_coin,
+                "min_ts_venue_ms": min_ts_venue_ms,
+                "max_ts_venue_ms": max_ts_venue_ms,
+                "recv_minus_max_venue_ms": (recv_ms - max_ts_venue_ms) if max_ts_venue_ms is not None else None,
+                "emitted_trades": emitted,
+            }
+
+            async def _write() -> None:
+                # Re-check inside coroutine for type-narrowing.
+                if hyperliquid_debug_path is None or hyperliquid_debug_lock is None:
+                    return
+                async with hyperliquid_debug_lock:
+                    with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(payload, separators=(",", ":")) + "\n")
+
+            try:
+                asyncio.run_coroutine_threadsafe(_write(), loop)
+            except RuntimeError:
+                return
+
+    info = Info()
+    sub_id = info.subscribe({"type": "trades", "coin": candidate.base_symbol}, on_msg)
+    try:
+        while _now_ms() < stop_at_ms:
+            await asyncio.sleep(0.25)
+    finally:
+        try:
+            info.unsubscribe({"type": "trades", "coin": candidate.base_symbol}, sub_id)
+        finally:
+            info.disconnect_websocket()
 
 
 def _ensure_dir(path: Path) -> None:
@@ -716,6 +986,28 @@ async def main_async() -> int:
     parser.add_argument("--duration-s", type=int, default=1800, help="Capture duration in seconds (default: 1800).")
     parser.add_argument("--out-root", default="logs/venue_trade_runs", help="Directory root for capture outputs (default: logs/venue_trade_runs).")
     parser.add_argument("--gzip", action="store_true", help="Gzip the raw jsonl capture log.")
+    parser.add_argument(
+        "--hyperliquid-ts-mode",
+        choices=["recv", "venue"],
+        default="venue",
+        help=(
+            "How to populate ts_exchange_ms for hyperliquid_perp. "
+            "'venue' (default) uses Hyperliquid's trade 'time' field; "
+            "'recv' uses local receive time for tournament alignment. "
+            "In both modes, ts_venue_ms records the raw venue timestamp when present."
+        ),
+    )
+    parser.add_argument(
+        "--debug-hyperliquid",
+        action="store_true",
+        help="Write Hyperliquid message-level debug jsonl into the run_dir (default: disabled).",
+    )
+    parser.add_argument(
+        "--hyperliquid-transport",
+        choices=["sdk", "raw"],
+        default="sdk",
+        help="How to connect for hyperliquid_perp (default: sdk).",
+    )
     args = parser.parse_args()
 
     base_symbols = _parse_symbol_list(args.symbols)
@@ -738,7 +1030,52 @@ async def main_async() -> int:
         raw_path = raw_path.with_suffix(".jsonl.gz")
 
     q: asyncio.Queue[TradePrint] = asyncio.Queue(maxsize=200_000)
-    tasks = [asyncio.create_task(_ws_run(c, out_queue=q, stop_at_ms=stop_at_ms)) for c in candidates]
+    hl_mode = str(args.hyperliquid_ts_mode)
+    hl_transport = str(args.hyperliquid_transport)
+    hl_debug_path: Path | None = None
+    hl_debug_lock: asyncio.Lock | None = None
+    if bool(args.debug_hyperliquid):
+        hl_debug_path = out_dir / "hyperliquid_debug.jsonl"
+        hl_debug_path.write_text(
+            json.dumps(
+                {
+                    "_meta": {
+                        "type": "hyperliquid_debug",
+                        "created_at_ms": start_ms,
+                        "symbols": base_symbols,
+                        "hyperliquid_ts_mode": hl_mode,
+                    }
+                },
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        hl_debug_lock = asyncio.Lock()
+    tasks = [
+        asyncio.create_task(
+            _hyperliquid_sdk_run(
+                c,
+                out_queue=q,
+                stop_at_ms=stop_at_ms,
+                hyperliquid_ts_mode=hl_mode,
+                hyperliquid_debug_path=hl_debug_path,
+                hyperliquid_debug_lock=hl_debug_lock,
+            )
+        )
+        if c.venue == "hyperliquid" and str(args.hyperliquid_transport) == "sdk"
+        else asyncio.create_task(
+            _ws_run(
+                c,
+                out_queue=q,
+                stop_at_ms=stop_at_ms,
+                hyperliquid_ts_mode=hl_mode,
+                hyperliquid_debug_path=hl_debug_path,
+                hyperliquid_debug_lock=hl_debug_lock,
+            )
+        )
+        for c in candidates
+    ]
 
     opener = gzip.open if args.gzip else open
     with opener(raw_path, "wt", encoding="utf-8") as handle:  # type: ignore[call-overload]
@@ -749,6 +1086,8 @@ async def main_async() -> int:
                 "stop_at_ms": stop_at_ms,
                 "symbols": base_symbols,
                 "candidates": candidate_ids,
+                "hyperliquid_ts_mode": hl_mode,
+                "hyperliquid_transport": hl_transport,
             }
         }
         handle.write(json.dumps(meta, separators=(",", ":")) + "\n")
@@ -776,4 +1115,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

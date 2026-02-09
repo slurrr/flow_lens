@@ -23,6 +23,7 @@ class CaptureMeta:
     stop_at_ms: int
     symbols: list[str]
     candidates: list[str]
+    hyperliquid_ts_mode: str | None = None
 
 
 @dataclass
@@ -82,6 +83,9 @@ class BucketAgg:
 class SeriesStats:
     points: int = 0
     recv_minus_exchange: Reservoir = field(default_factory=lambda: Reservoir(20_000, seed=123))
+    venue_points: int = 0
+    recv_minus_venue: Reservoir = field(default_factory=lambda: Reservoir(20_000, seed=456))
+    stale_dropped: int = 0
 
 
 @dataclass(frozen=True)
@@ -486,6 +490,43 @@ def _format_time_hygiene(
     return "\n".join(lines)
 
 
+def _format_venue_time_hygiene(candidates: list[str], stats: dict[str, SeriesStats]) -> str:
+    lines: list[str] = []
+    lines.append("Venue timestamp lag (from ts_recv_ms - ts_venue_ms, when provided)")
+    lines.append("candidate                points   med_lag_ms   lag_p95_ms")
+    for cid in sorted(candidates):
+        s = stats.get(cid)
+        if s is None or s.venue_points <= 0 or not s.recv_minus_venue._values:
+            lines.append(f"{cid[:22].ljust(22)}  {str(0).rjust(6)}  {str(0).rjust(10)}  {str(0).rjust(9)}")
+            continue
+        try:
+            med = float(statistics.median(s.recv_minus_venue._values))
+        except statistics.StatisticsError:
+            med = 0.0
+        p95 = float(s.recv_minus_venue.pct(0.95))
+        lines.append(f"{cid[:22].ljust(22)}  {str(s.venue_points).rjust(6)}  {med:10.0f}  {p95:9.0f}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _format_stale_drops(
+    candidates: list[str],
+    stats: dict[str, SeriesStats],
+    *,
+    drop_stale: bool,
+    max_wire_lag_ms: int,
+) -> str:
+    lines: list[str] = []
+    lines.append(f"Stale-on-arrival drops (wire_lag_ms > {max_wire_lag_ms}ms) drop_stale={drop_stale}")
+    lines.append("candidate                dropped")
+    for cid in sorted(candidates):
+        s = stats.get(cid)
+        dropped = s.stale_dropped if s is not None else 0
+        lines.append(f"{cid[:22].ljust(22)}  {str(dropped).rjust(7)}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pairwise venue discovery tournament on captured trade prints.")
     parser.add_argument("--input", required=True, help="Path to a venue_trade_capture log (jsonl or jsonl.gz).")
@@ -516,6 +557,25 @@ def main() -> int:
     parser.add_argument("--confirm-secondary-s", type=float, default=4.0, help="Secondary confirm horizon seconds (default: 4.0).")
     parser.add_argument("--jitter-guard-ms", type=int, default=250, help="Default jitter guard (ms) (default: 250).")
     parser.add_argument("--max-stale-s", type=float, default=1.0, help="Max fill-forward staleness seconds (default: 1.0).")
+    parser.add_argument(
+        "--drop-stale",
+        action="store_true",
+        help="Drop stale-on-arrival trades (wire_lag_ms > --max-wire-lag-ms). Default: disabled.",
+    )
+    parser.add_argument(
+        "--max-wire-lag-ms",
+        type=int,
+        default=5000,
+        help="Max allowed wire lag in ms for --drop-stale (default: 5000).",
+    )
+    parser.add_argument(
+        "--wire-lag-thresholds-ms",
+        default="",
+        help=(
+            "Optional comma-separated thresholds to run in one report (e.g. '2000,4000'). "
+            "When set, the analyzer runs multiple passes with drop_stale enabled for each threshold."
+        ),
+    )
     parser.add_argument("--weights", default="0.60,0.30,0.10", help="Regime weights impulse,transition,calm (default: 0.60,0.30,0.10).")
     parser.add_argument("--exclude-ref", default="upbit_spot", help="Comma-separated candidate_ids to exclude from composite reference price.")
     parser.add_argument(
@@ -541,6 +601,8 @@ def main() -> int:
     confirm_primary_buckets = max(1, int(round(float(args.confirm_primary_s) * 1000 / bucket_ms)))
     confirm_secondary_buckets = max(1, int(round(float(args.confirm_secondary_s) * 1000 / bucket_ms)))
     max_stale_buckets = max(0, int(round(float(args.max_stale_s) * 1000 / bucket_ms)))
+    drop_stale = bool(args.drop_stale)
+    max_wire_lag_ms = max(0, int(args.max_wire_lag_ms))
     weights = _weights(str(args.weights))
     exclude_ref = {x.strip() for x in str(args.exclude_ref).split(",") if x.strip()}
     timebase_str = str(args.timebase)
@@ -548,11 +610,28 @@ def main() -> int:
         raise ValueError(f"Invalid timebase: {timebase_str!r}")
     timebase: Timebase = timebase_str
 
+    thresholds: list[int] = []
+    if str(args.wire_lag_thresholds_ms).strip():
+        for part in str(args.wire_lag_thresholds_ms).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            thresholds.append(max(0, int(part)))
+        thresholds = sorted(set(thresholds))
+    else:
+        thresholds = [max_wire_lag_ms]
+
+    multi = str(args.wire_lag_thresholds_ms).strip() != ""
+    drop_stale_by_thr = {thr: True for thr in thresholds} if multi else {thresholds[0]: drop_stale}
+
     meta: CaptureMeta | None = None
-    # Grouped by (base_symbol, market_type)
-    groups: dict[tuple[str, str], dict[str, dict[int, BucketAgg]]] = defaultdict(lambda: defaultdict(dict))
-    stats: dict[tuple[str, str], dict[str, SeriesStats]] = defaultdict(lambda: defaultdict(SeriesStats))
-    venues: dict[str, tuple[str, str]] = {}  # candidate_id -> (venue, market_type)
+    # Per-threshold state (trade parsing happens once)
+    groups_by_thr: dict[int, dict[tuple[str, str], dict[str, dict[int, BucketAgg]]]] = {
+        thr: defaultdict(lambda: defaultdict(dict)) for thr in thresholds
+    }
+    stats_by_thr: dict[int, dict[tuple[str, str], dict[str, SeriesStats]]] = {
+        thr: defaultdict(lambda: defaultdict(SeriesStats)) for thr in thresholds
+    }
 
     for line in _open_maybe_gz(input_path):
         line = line.strip()
@@ -572,6 +651,7 @@ def main() -> int:
                     stop_at_ms=int(m.get("stop_at_ms") or 0),
                     symbols=[str(x) for x in (m.get("symbols") or []) if isinstance(x, str)],
                     candidates=[str(x) for x in (m.get("candidates") or []) if isinstance(x, str)],
+                    hyperliquid_ts_mode=str(m.get("hyperliquid_ts_mode")) if isinstance(m.get("hyperliquid_ts_mode"), str) else None,
                 )
             continue
 
@@ -582,6 +662,7 @@ def main() -> int:
         if not isinstance(candidate_id, str) or not isinstance(venue, str) or not isinstance(market_type, str) or not isinstance(base_symbol, str):
             continue
         ts_exchange_ms = payload.get("ts_exchange_ms")
+        ts_venue_ms = payload.get("ts_venue_ms")
         ts_recv_ms = payload.get("ts_recv_ms")
         price = payload.get("price")
         size = payload.get("size")
@@ -602,22 +683,35 @@ def main() -> int:
         if end_ms and filter_ts_ms >= end_ms:
             continue
 
-        venues[candidate_id] = (venue, market_type)
         key = (base_symbol, market_type)
-        s = stats[key][candidate_id]
-        s.points += 1
-        s.recv_minus_exchange.add(float(ts_recv_ms - ts_exchange_ms))
 
-        offset_ms = 0.0
-        if timebase == "exchange_local":
-            offset_ms = _series_time_offset_ms(s.recv_minus_exchange)
-        effective_ms = _effective_ts_ms(ts_exchange_ms, ts_recv_ms, timebase=timebase, offset_ms=offset_ms)
-        b = effective_ms // bucket_ms
-        agg = groups[key][candidate_id].get(b)
-        if agg is None:
-            agg = BucketAgg()
-            groups[key][candidate_id][b] = agg
-        agg.add(effective_ms, px, qty)
+        wire_basis_ms = ts_venue_ms if isinstance(ts_venue_ms, int) and ts_venue_ms > 0 else ts_exchange_ms
+        wire_lag_ms = ts_recv_ms - int(wire_basis_ms)
+
+        for thr in thresholds:
+            stats = stats_by_thr[thr]
+            s = stats[key][candidate_id]
+            s.points += 1
+            s.recv_minus_exchange.add(float(ts_recv_ms - ts_exchange_ms))
+            if isinstance(ts_venue_ms, int) and ts_venue_ms > 0:
+                s.venue_points += 1
+                s.recv_minus_venue.add(float(ts_recv_ms - ts_venue_ms))
+
+            if drop_stale_by_thr[thr] and wire_lag_ms > thr:
+                s.stale_dropped += 1
+                continue
+
+            offset_ms = 0.0
+            if timebase == "exchange_local":
+                offset_ms = _series_time_offset_ms(s.recv_minus_exchange)
+            effective_ms = _effective_ts_ms(ts_exchange_ms, ts_recv_ms, timebase=timebase, offset_ms=offset_ms)
+            b = effective_ms // bucket_ms
+            groups = groups_by_thr[thr]
+            agg = groups[key][candidate_id].get(b)
+            if agg is None:
+                agg = BucketAgg()
+                groups[key][candidate_id][b] = agg
+            agg.add(effective_ms, px, qty)
 
     if meta is None:
         raise ValueError(f"Capture file missing meta line: {input_path}")
@@ -635,107 +729,128 @@ def main() -> int:
     report_lines.append(f"confirm_primary_s={args.confirm_primary_s} confirm_secondary_s={args.confirm_secondary_s} jitter_guard_ms={args.jitter_guard_ms}")
     report_lines.append(f"exclude_ref={sorted(exclude_ref)}")
     report_lines.append(f"timebase={timebase}")
+    if meta.hyperliquid_ts_mode:
+        report_lines.append(f"hyperliquid_ts_mode={meta.hyperliquid_ts_mode}")
+    if multi:
+        report_lines.append(f"wire_lag_thresholds_ms={thresholds}")
     report_lines.append("")
 
-    for (base_symbol, market_type), by_candidate in sorted(groups.items()):
-        if not by_candidate:
-            continue
-        candidates = sorted(by_candidate.keys())
-        if len(candidates) < 2:
-            continue
+    for thr in thresholds:
+        if multi:
+            report_lines.append(f"=== wire_lag_ms<={thr} ===")
+            report_lines.append("")
 
-        start_bucket = min((b for d in by_candidate.values() for b in d.keys()), default=0)
-        end_bucket = max((b for d in by_candidate.values() for b in d.keys()), default=0)
-        n = end_bucket - start_bucket + 1
+        groups = groups_by_thr[thr]
+        stats = stats_by_thr[thr]
 
-        series_px: dict[str, list[float | None]] = {}
-        series_age: dict[str, list[int]] = {}
-        offsets_ms: dict[str, float] = {}
-        jitter_p95: dict[str, float] = {}
+        for (base_symbol, market_type), by_candidate in sorted(groups.items()):
+            if not by_candidate:
+                continue
+            candidates = sorted(by_candidate.keys())
+            if len(candidates) < 2:
+                continue
 
-        for cid in candidates:
-            s = stats[(base_symbol, market_type)][cid]
-            offsets_ms[cid] = _series_time_offset_ms(s.recv_minus_exchange)
-            jitter_p95[cid] = s.recv_minus_exchange.pct(0.95)
-            arr: list[float | None] = [None] * n
-            age: list[int] = [max_stale_buckets + 1] * n
+            start_bucket = min((b for d in by_candidate.values() for b in d.keys()), default=0)
+            end_bucket = max((b for d in by_candidate.values() for b in d.keys()), default=0)
+            n = end_bucket - start_bucket + 1
 
-            last_px: float | None = None
-            last_idx: int | None = None
-            buckets = by_candidate[cid]
-            for i in range(n):
-                b = start_bucket + i
-                agg = buckets.get(b)
-                if agg is not None:
-                    p = agg.price()
-                    if isinstance(p, float) and p > 0:
-                        arr[i] = p
-                        age[i] = 0
-                        last_px = p
-                        last_idx = i
-                        continue
-                if last_px is None or last_idx is None:
-                    continue
-                gap = i - last_idx
-                age[i] = gap
-                if gap <= max_stale_buckets:
-                    arr[i] = last_px
+            series_px: dict[str, list[float | None]] = {}
+            series_age: dict[str, list[int]] = {}
+            offsets_ms: dict[str, float] = {}
+            jitter_p95: dict[str, float] = {}
 
-            series_px[cid] = arr
-            series_age[cid] = age
-
-        # Composite reference is median across candidates (excluding some)
-        ref_px: list[float | None] = [None] * n
-        for i in range(n):
-            values: list[float] = []
             for cid in candidates:
-                if cid in exclude_ref:
-                    continue
-                v = series_px[cid][i]
-                if isinstance(v, float) and v > 0:
-                    values.append(v)
-            ref_px[i] = _median(values)
+                s = stats[(base_symbol, market_type)][cid]
+                offsets_ms[cid] = _series_time_offset_ms(s.recv_minus_exchange)
+                jitter_p95[cid] = s.recv_minus_exchange.pct(0.95)
+                arr: list[float | None] = [None] * n
+                age: list[int] = [max_stale_buckets + 1] * n
 
-        r_ref = _compute_returns(ref_px, horizon_buckets=horizon_buckets)
-        events, thresholds = _extract_events(
-            r_ref,
-            impulse_q=float(args.impulse_q),
-            transition_q=float(args.transition_q),
-            micro_q=float(args.micro_q),
-            cooldown_buckets=cooldown_buckets,
-            pre_buckets=pre_buckets,
-            post_buckets=post_buckets,
-            calm_count=int(args.calm_count),
-        )
+                last_px: float | None = None
+                last_idx: int | None = None
+                buckets = by_candidate[cid]
+                for i in range(n):
+                    b = start_bucket + i
+                    agg = buckets.get(b)
+                    if agg is not None:
+                        p = agg.price()
+                        if isinstance(p, float) and p > 0:
+                            arr[i] = p
+                            age[i] = 0
+                            last_px = p
+                            last_idx = i
+                            continue
+                    if last_px is None or last_idx is None:
+                        continue
+                    gap = i - last_idx
+                    age[i] = gap
+                    if gap <= max_stale_buckets:
+                        arr[i] = last_px
 
-        pair_results = _pairwise_tournament(
-            bucket_ms=bucket_ms,
-            candidates=candidates,
-            series_px=series_px,
-            series_age=series_age,
-            jitter_p95=jitter_p95,
-            ref_px=ref_px,
-            events=events,
-            dir_horizon_buckets=dir_horizon_buckets,
-            jitter_guard_ms_default=int(args.jitter_guard_ms),
-            confirm_primary_buckets=confirm_primary_buckets,
-            confirm_secondary_buckets=confirm_secondary_buckets,
-            cross_frac=float(args.cross_frac),
-            max_stale_buckets=max_stale_buckets,
-        )
-        scores = _venue_scores(candidates, pair_results, weights=weights)
+                series_px[cid] = arr
+                series_age[cid] = age
 
-        report_lines.append(f"== {base_symbol} / {market_type} ==")
-        report_lines.append(f"candidates: {', '.join(candidates)}")
-        report_lines.append(_format_time_hygiene(candidates, stats[(base_symbol, market_type)], offsets_ms))
-        report_lines.append(
-            "events: " + ", ".join(f"{reg}={sum(1 for e in events if e.regime == reg)}" for reg in ("impulse", "transition", "calm"))
-        )
-        report_lines.append(
-            f"thresholds(|r_ref|): impulse={thresholds['impulse_thr']:.6f} transition={thresholds['transition_thr']:.6f} micro={thresholds['micro_thr']:.6f}"
-        )
-        report_lines.append("")
-        report_lines.append(_format_rankings(candidates, scores, weights=weights))
+            # Composite reference is median across candidates (excluding some)
+            ref_px: list[float | None] = [None] * n
+            for i in range(n):
+                values: list[float] = []
+                for cid in candidates:
+                    if cid in exclude_ref:
+                        continue
+                    v = series_px[cid][i]
+                    if isinstance(v, float) and v > 0:
+                        values.append(v)
+                ref_px[i] = _median(values)
+
+            r_ref = _compute_returns(ref_px, horizon_buckets=horizon_buckets)
+            events, thr_abs = _extract_events(
+                r_ref,
+                impulse_q=float(args.impulse_q),
+                transition_q=float(args.transition_q),
+                micro_q=float(args.micro_q),
+                cooldown_buckets=cooldown_buckets,
+                pre_buckets=pre_buckets,
+                post_buckets=post_buckets,
+                calm_count=int(args.calm_count),
+            )
+
+            pair_results = _pairwise_tournament(
+                bucket_ms=bucket_ms,
+                candidates=candidates,
+                series_px=series_px,
+                series_age=series_age,
+                jitter_p95=jitter_p95,
+                ref_px=ref_px,
+                events=events,
+                dir_horizon_buckets=dir_horizon_buckets,
+                jitter_guard_ms_default=int(args.jitter_guard_ms),
+                confirm_primary_buckets=confirm_primary_buckets,
+                confirm_secondary_buckets=confirm_secondary_buckets,
+                cross_frac=float(args.cross_frac),
+                max_stale_buckets=max_stale_buckets,
+            )
+            scores = _venue_scores(candidates, pair_results, weights=weights)
+
+            report_lines.append(f"== {base_symbol} / {market_type} ==")
+            report_lines.append(f"candidates: {', '.join(candidates)}")
+            report_lines.append(_format_time_hygiene(candidates, stats[(base_symbol, market_type)], offsets_ms))
+            report_lines.append(_format_venue_time_hygiene(candidates, stats[(base_symbol, market_type)]))
+            report_lines.append(
+                _format_stale_drops(
+                    candidates,
+                    stats[(base_symbol, market_type)],
+                    drop_stale=drop_stale_by_thr[thr],
+                    max_wire_lag_ms=thr,
+                )
+            )
+            report_lines.append(
+                "events: " + ", ".join(f"{reg}={sum(1 for e in events if e.regime == reg)}" for reg in ("impulse", "transition", "calm"))
+            )
+            report_lines.append(
+                f"thresholds(|r_ref|): impulse={thr_abs['impulse_thr']:.6f} transition={thr_abs['transition_thr']:.6f} micro={thr_abs['micro_thr']:.6f}"
+            )
+            report_lines.append("")
+            report_lines.append(_format_rankings(candidates, scores, weights=weights))
 
     out_path: Path
     if str(args.out).strip():

@@ -230,9 +230,20 @@ This is the locked capture plan for venue discovery. It is designed to:
 - capture weekly open/close dynamics (via Sunday + UTC boundary coverage), and
 - be analyzable as both “all-up blocks” and hour-sliced bookends (§7.1.3).
 
-Run days:
+Target sessions (what we care about):
 
-- Monday, Wednesday, Friday, and Sunday
+- US-session leadership on Monday, Wednesday, Friday
+- Weekly boundary behavior on Sunday (weekly open), plus Monday coverage via the Sunday-start pass
+
+Operational note (important):
+
+- This scheduler is anchored at **16:00 MST**. If you start it at ~15:45–15:55 MST, it will sleep until 16:00 and then
+  run the full 24h plan.
+- Therefore, to capture a given day’s US windows (06:00–16:00 MST), you must start the scheduler the **prior afternoon**:
+  - Saturday start → Sunday US windows
+  - Sunday start → Monday US windows
+  - Tuesday start → Wednesday US windows
+  - Thursday start → Friday US windows
 
 Run cadence:
 
@@ -244,6 +255,7 @@ Scheduler start time (required):
 - Start the scheduler between **15:45–15:55 MST** so it can queue the first block at 16:00 MST.
   - Run: `./.venv/bin/python scripts/venue_tournament_scheduler_24h.py --gzip`
   - Preview schedule: `./.venv/bin/python scripts/venue_tournament_scheduler_24h.py --dry-run`
+  - Default allowed start days are aligned to the mapping above: `sat,sun,tue,thu`
 
 Blocks captured per 24h pass (MST, UTC−7) with UTC equivalents:
 

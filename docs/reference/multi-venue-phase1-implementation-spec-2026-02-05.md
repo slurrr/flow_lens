@@ -6,12 +6,18 @@ Contract reference:
 
 - `docs/reference/multi-venue-adapter-architecture-contract-wip-2026-02-04.md`
 
+Canonical venue-add process reference:
+
+- `docs/reference/venue-addition-checklist-phase1.md`
+- `docs/reference/venue_add_notes/_template.md`
+
 Required decisions (must exist before merge):
 
 - `FL-0057` base_symbol contract + migration
 - `FL-0058` canonical aggressor inference + diagnostics gates
 - `FL-0059` filter context reset scope
 - `FL-0060` multi-source price selector policy + switch logging
+- `FL-0061` price series requires eligible source
 
 ## 0) Non-goals (Phase 1)
 
@@ -127,4 +133,3 @@ During a volatile window:
 4) Generalize price selector (policy interface + `priority_sticky`) and add switch logs.
 5) Only then integrate the first new venue adapter (Coinbase spot is the recommended first non-Binance source).
 6) Replay-gate BTC+SOL, then run a live sanity pass.
-

@@ -626,6 +626,27 @@ def _log_switch_only(
         handle.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
 
 
+def _log_price_series_unavailable(
+    handle: TextIO,
+    *,
+    symbol: str,
+    now_ms: int,
+    buffer: RollingEventBuffer,
+) -> None:
+    record = {
+        "event_type": "price_series_unavailable",
+        "ts_wall_ms": now_ms,
+        "now_ms": now_ms,
+        "symbol": symbol,
+        "selector_policy": buffer.selector_policy,
+        "active_price_source_id": buffer.active_price_source_id,
+        "price_series_side": buffer.price_series_side,
+        "price_series_used": buffer.price_series_side,
+        "reason": "no_eligible_price_source",
+    }
+    handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
 def _iter_chunks(data_dir: Path) -> list[ChunkFile]:
     chunks: list[ChunkFile] = []
     for path in data_dir.rglob("binance_backfill-*.jsonl*"):
@@ -929,13 +950,16 @@ def main() -> None:
                     events = [item.event for item in replay_events]
                     state = loop.step(events, now_ms, window_override_ms=window_override_ms)
                     switch_events = buffer.pop_price_switch_events()
+                    did_step = True
                 else:
                     if last_event_ms is None or now_ms - last_event_ms > cutoff_ms:
                         state = None
                         switch_events = tuple()
+                        did_step = False
                     else:
                         state = loop.step((), now_ms, window_override_ms=window_override_ms)
                         switch_events = buffer.pop_price_switch_events()
+                        did_step = True
 
                 if state is not None:
                     _log_record(
@@ -953,6 +977,13 @@ def main() -> None:
                         symbol=base_symbol,
                         now_ms=now_ms,
                         switch_events=switch_events,
+                    )
+                if did_step and state is None and buffer.active_price_source_id is None:
+                    _log_price_series_unavailable(
+                        handle,
+                        symbol=base_symbol,
+                        now_ms=now_ms,
+                        buffer=buffer,
                     )
                 now_ms += update_ms
 

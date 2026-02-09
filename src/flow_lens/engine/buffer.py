@@ -264,18 +264,14 @@ class RollingEventBuffer:
         """
         active_source_id, _ = self._select_active_source(now_timestamp)
         if active_source_id is None:
-            return self._last_price
+            return None
         return self._last_price_by_source.get(active_source_id)
 
     def window_price_range(self, now_timestamp: int) -> tuple[float | None, float | None, str]:
         active_source_id, selection = self._select_active_source(now_timestamp)
         self._last_selection = selection
         if active_source_id is None:
-            if self._last_price is None:
-                return None, None, selection.price_series_used
-            if self._events:
-                return self._events[0].price, self._last_price, selection.price_series_used
-            return self._last_price, self._last_price, selection.price_series_used
+            return None, None, selection.price_series_used
 
         end = self._last_price_by_source.get(active_source_id)
         if end is None:
