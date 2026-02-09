@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import curses
+import faulthandler
 import json
 import logging
 import queue
@@ -15,12 +16,20 @@ from typing import TextIO
 
 from flow_lens.adapters import (
     AdapterEvent,
+    AdapterStats,
     AdapterStatus,
+    BaseAdapter,
     BinancePerpWSAdapter,
     BinanceSpotWSAdapter,
+    CoinbaseSpotWSAdapter,
 )
 from flow_lens.config import AppConfig, load_app_config
-from flow_lens.engine.buffer import RollingEventBuffer
+from flow_lens.engine.buffer import (
+    PriceSourceMeta,
+    PriceSwitchEvent,
+    PriorityStickySelector,
+    RollingEventBuffer,
+)
 from flow_lens.engine.constants import (
     Binning,
     Defaults,
@@ -58,6 +67,18 @@ class RuntimeState:
     pending: dict[str, list[Event]]
     symbol_maps: SymbolMaps
     last_event_ms: dict[str, int | None]
+    source_meta: dict[str, PriceSourceMeta]
+    source_allowlists: dict[str, set[str] | None]
+    filter_reset_events: list["FilterContextResetEvent"]
+    coinbase_base_to_actual: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
+class FilterContextResetEvent:
+    symbol: str
+    old_mask: tuple[str, ...]
+    new_mask: tuple[str, ...]
+    reset_applied: tuple[str, ...]
 
 
 def main() -> None:
@@ -68,16 +89,33 @@ def main() -> None:
         action="store_true",
         help="Enable diagnostics logging to JSONL.",
     )
+    parser.add_argument(
+        "--config",
+        default="config/app.toml",
+        help="Path to app config (default: config/app.toml).",
+    )
+    parser.add_argument(
+        "--fault",
+        action="store_true",
+        help="Enable faulthandler dumps for fatal crashes.",
+    )
     args = parser.parse_args()
-    curses.wrapper(partial(_run, diagnostics_enabled=args.dia))
+    if args.fault:
+        _enable_fault_handler()
+    curses.wrapper(partial(_run, diagnostics_enabled=args.dia, config_path=args.config))
 
 
-def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
+def _run(
+    stdscr: "curses.window",
+    *,
+    diagnostics_enabled: bool,
+    config_path: str,
+) -> None:
     stdscr.nodelay(True)
     stdscr.keypad(True)
     curses.curs_set(0)
 
-    config = load_app_config()
+    config = load_app_config(config_path)
     update_interval_s = config.update_window_seconds
     window_ms = int(config.update_window_seconds * 1000)
     defaults = Defaults(
@@ -144,6 +182,7 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
         ),
     )
     logging.info("Runtime config: %s", _runtime_config_map(config))
+    _log_source_registry(config)
     base_symbols = _collect_symbols(config)
 
     resolver = BinanceSymbolResolver()
@@ -153,22 +192,35 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
     log_resolution("Perp", perp_resolution)
 
     symbol_maps = build_symbol_maps(spot_resolution, perp_resolution)
+    source_meta = _build_price_source_meta(config)
     queue_events: queue.Queue[AdapterEvent] = queue.Queue()
     supervisor = AdapterSupervisor(queue_events)
+    coinbase_product_map = _coinbase_product_map(
+        config.adapters["coinbase_spot"].symbols
+        if "coinbase_spot" in config.adapters
+        else []
+    )
     supervisor.start(
         spot_symbols=_flatten(symbol_maps.spot_base_to_actual),
+        spot_symbol_to_base=symbol_maps.spot_actual_to_base,
         spot_quotes=symbol_maps.spot_actual_to_quote,
         quote_pairs=symbol_maps.quote_pairs,
         quote_rates=symbol_maps.quote_rates,
         perp_symbols=_flatten(symbol_maps.perp_base_to_actual),
+        perp_symbol_to_base=symbol_maps.perp_actual_to_base,
+        coinbase_symbols=sorted(coinbase_product_map.values()),
     )
 
     runtime = _init_runtime(
         base_symbols,
         window_ms,
         symbol_maps,
+        source_meta,
         defaults,
-        config.spot_price_stale_switch_ticks,
+        selector_stale_failover_ms=config.price_selector_stale_failover_ms,
+        selector_recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
+        selector_switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
+        coinbase_base_to_actual=_coinbase_base_to_actual(coinbase_product_map),
     )
     input_state = InputState(symbols=base_symbols)
     renderer = Renderer(
@@ -241,8 +293,21 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
             last_frame = now
             symbol = input_state.symbol
             now_ms = int(time.time() * 1000)
-            status_spot = _adapter_status(
-                symbol, now_ms, supervisor.spot, runtime.symbol_maps.spot_base_to_actual
+            status_spot = _combine_status(
+                [
+                    _adapter_status(
+                        symbol,
+                        now_ms,
+                        supervisor.spot,
+                        runtime.symbol_maps.spot_base_to_actual,
+                    ),
+                    _adapter_status(
+                        symbol,
+                        now_ms,
+                        supervisor.coinbase,
+                        runtime.coinbase_base_to_actual,
+                    ),
+                ]
             )
             status_perp = _adapter_status(
                 symbol, now_ms, supervisor.perp, runtime.symbol_maps.perp_base_to_actual
@@ -251,8 +316,13 @@ def _run(stdscr: "curses.window", *, diagnostics_enabled: bool) -> None:
             perp_stats = None
             spot_actuals = runtime.symbol_maps.spot_base_to_actual.get(symbol, [])
             perp_actuals = runtime.symbol_maps.perp_base_to_actual.get(symbol, [])
+            coinbase_actuals = runtime.coinbase_base_to_actual.get(symbol, [])
             if supervisor.spot is not None:
                 spot_stats = supervisor.spot.stats_for(now_ms, symbols=spot_actuals)
+            coinbase_stats = None
+            if supervisor.coinbase is not None:
+                coinbase_stats = supervisor.coinbase.stats_for(now_ms, symbols=coinbase_actuals)
+            spot_stats = _combine_adapter_stats([spot_stats, coinbase_stats])
             if supervisor.perp is not None:
                 perp_stats = supervisor.perp.stats_for(now_ms, symbols=perp_actuals)
             metrics_snapshot = live_metrics.snapshot(symbol)
@@ -279,6 +349,49 @@ def _collect_symbols(config: AppConfig) -> list[str]:
     return sorted(symbols)
 
 
+def _build_price_source_meta(config: AppConfig) -> dict[str, PriceSourceMeta]:
+    return {
+        source_id: PriceSourceMeta(
+            source_id=source_id,
+            market_type_for_x=source.market_type_for_x,
+            price_eligible=source.price_eligible,
+            price_priority=source.price_priority,
+        )
+        for source_id, source in config.sources.items()
+    }
+
+
+def _coinbase_product_map(symbols: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for symbol in symbols:
+        product = symbol.strip().upper()
+        if "-" not in product:
+            product = f"{product}-USD"
+        base = product.split("-")[0]
+        mapping[base] = product
+    return mapping
+
+
+def _coinbase_base_to_actual(mapping: dict[str, str]) -> dict[str, list[str]]:
+    return {base: [product] for base, product in mapping.items()}
+
+
+def _log_source_registry(config: AppConfig) -> None:
+    for source_id, source in sorted(config.sources.items()):
+        logging.info(
+            "Source registry %s: venue=%s class=%s market=%s price_eligible=%s "
+            "priority=%s aggressor_mode=%s quote_mode=%s",
+            source_id,
+            source.venue,
+            source.instrument_class,
+            source.market_type_for_x,
+            source.price_eligible,
+            source.price_priority,
+            source.capabilities.aggressor_mode,
+            source.capabilities.quote_mode,
+        )
+
+
 class AdapterSupervisor:
     def __init__(self, queue_events: queue.Queue[AdapterEvent]) -> None:
         self._queue_events = queue_events
@@ -289,44 +402,57 @@ class AdapterSupervisor:
         self._ready = threading.Event()
         self.spot: BinanceSpotWSAdapter | None = None
         self.perp: BinancePerpWSAdapter | None = None
+        self.coinbase: CoinbaseSpotWSAdapter | None = None
 
     def start(
         self,
         *,
         spot_symbols: list[str],
+        spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
         perp_symbols: list[str],
+        perp_symbol_to_base: dict[str, str],
+        coinbase_symbols: list[str],
     ) -> None:
         self._thread.start()
         self._ready.wait(timeout=5)
         self.update_symbols(
             spot_symbols=spot_symbols,
+            spot_symbol_to_base=spot_symbol_to_base,
             spot_quotes=spot_quotes,
             quote_pairs=quote_pairs,
             quote_rates=quote_rates,
             perp_symbols=perp_symbols,
+            perp_symbol_to_base=perp_symbol_to_base,
+            coinbase_symbols=coinbase_symbols,
         )
 
     def update_symbols(
         self,
         *,
         spot_symbols: list[str],
+        spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
         perp_symbols: list[str],
+        perp_symbol_to_base: dict[str, str],
+        coinbase_symbols: list[str],
     ) -> None:
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(
             self._restart(
                 spot_symbols=spot_symbols,
+                spot_symbol_to_base=spot_symbol_to_base,
                 spot_quotes=spot_quotes,
                 quote_pairs=quote_pairs,
                 quote_rates=quote_rates,
                 perp_symbols=perp_symbols,
+                perp_symbol_to_base=perp_symbol_to_base,
+                coinbase_symbols=coinbase_symbols,
             ),
             self._loop,
         )
@@ -341,26 +467,37 @@ class AdapterSupervisor:
         self,
         *,
         spot_symbols: list[str],
+        spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
         quote_pairs: dict[str, QuotePair],
         quote_rates: dict[str, float],
         perp_symbols: list[str],
+        perp_symbol_to_base: dict[str, str],
+        coinbase_symbols: list[str],
     ) -> None:
         await self._cancel_tasks()
         spot = BinanceSpotWSAdapter(
             symbols=spot_symbols,
+            symbol_to_base=spot_symbol_to_base,
             symbol_quotes=spot_quotes,
             quote_pairs=quote_pairs,
             quote_rates=quote_rates,
         )
-        perp = BinancePerpWSAdapter(symbols=perp_symbols)
+        perp = BinancePerpWSAdapter(
+            symbols=perp_symbols,
+            symbol_to_base=perp_symbol_to_base,
+        )
+        coinbase = CoinbaseSpotWSAdapter(symbols=coinbase_symbols) if coinbase_symbols else None
         with self._lock:
             self.spot = spot
             self.perp = perp
+            self.coinbase = coinbase
         self._tasks = [
             asyncio.create_task(self._consume(spot)),
             asyncio.create_task(self._consume(perp)),
         ]
+        if coinbase is not None:
+            self._tasks.append(asyncio.create_task(self._consume(coinbase)))
 
     async def _cancel_tasks(self) -> None:
         if not self._tasks:
@@ -383,18 +520,28 @@ def _init_runtime(
     symbols: list[str],
     window_ms: int,
     symbol_maps: SymbolMaps,
+    source_meta: dict[str, PriceSourceMeta],
     defaults: Defaults,
-    spot_price_stale_switch_ticks: int,
+    selector_stale_failover_ms: int,
+    selector_recovery_confirm_cycles: int,
+    selector_switch_cooldown_cycles: int,
+    coinbase_base_to_actual: dict[str, list[str]],
 ) -> RuntimeState:
     loops: dict[str, EngineLoop] = {}
     last_state: dict[str, StateSnapshot | None] = {}
     pending: dict[str, list[Event]] = {symbol: [] for symbol in symbols}
     last_event_ms: dict[str, int | None] = {symbol: None for symbol in symbols}
+    source_allowlists: dict[str, set[str] | None] = {symbol: None for symbol in symbols}
 
     for symbol in symbols:
         buffer = RollingEventBuffer(
             window_delta_ms=window_ms,
-            spot_stale_switch_ticks=spot_price_stale_switch_ticks,
+            source_meta=source_meta,
+            price_selector=PriorityStickySelector(
+                stale_failover_ms=selector_stale_failover_ms,
+                recovery_confirm_cycles=selector_recovery_confirm_cycles,
+                switch_cooldown_cycles=selector_switch_cooldown_cycles,
+            ),
         )
         engine = StateEngine(defaults)
         loops[symbol] = EngineLoop(symbol=symbol, buffer=buffer, engine=engine)
@@ -406,6 +553,10 @@ def _init_runtime(
         pending=pending,
         symbol_maps=symbol_maps,
         last_event_ms=last_event_ms,
+        source_meta=source_meta,
+        source_allowlists=source_allowlists,
+        filter_reset_events=[],
+        coinbase_base_to_actual=coinbase_base_to_actual,
     )
 
 
@@ -415,11 +566,59 @@ def _drain_events(queue_events: queue.Queue[AdapterEvent], runtime: RuntimeState
             item = queue_events.get_nowait()
         except queue.Empty:
             break
-        base_symbol = _map_to_base(item, runtime.symbol_maps)
+        base_symbol = item.base_symbol.upper() if item.base_symbol is not None else None
+        if base_symbol is None:
+            base_symbol = _legacy_map_to_base(item, runtime.symbol_maps)
         if base_symbol is None or base_symbol not in runtime.pending:
             continue
         runtime.pending[base_symbol].append(item.event)
         runtime.last_event_ms[base_symbol] = item.event.timestamp
+
+
+def _apply_source_filter(
+    runtime: RuntimeState,
+    *,
+    symbol: str,
+    source_allowlist: set[str] | None,
+) -> None:
+    old_allowlist = runtime.source_allowlists.get(symbol)
+    new_allowlist = set(source_allowlist) if source_allowlist is not None else None
+    old_key = (
+        ("__ALL__",)
+        if old_allowlist is None
+        else tuple(sorted(old_allowlist))
+    )
+    new_key = (
+        ("__ALL__",)
+        if new_allowlist is None
+        else tuple(sorted(new_allowlist))
+    )
+    if old_key == new_key:
+        return
+    loop = runtime.loops[symbol]
+    loop.source_allowlist = new_allowlist
+    loop.buffer.reset_context()
+    loop.engine.reset_context()
+    runtime.pending[symbol] = []
+    runtime.last_state[symbol] = None
+    runtime.last_event_ms[symbol] = None
+    runtime.source_allowlists[symbol] = new_allowlist
+    runtime.filter_reset_events.append(
+        FilterContextResetEvent(
+            symbol=symbol,
+            old_mask=old_key,
+            new_mask=new_key,
+            reset_applied=(
+                "rolling_buffer",
+                "normalization_scales",
+                "smoothing_state",
+                "persistence_state",
+                "price_selector_state",
+                "visual_bins",
+                "lean_state",
+            ),
+        )
+    )
 
 
 def _update_state(
@@ -436,11 +635,25 @@ def _update_state(
         window_override = tbt_windows.get(symbol)
         if events:
             state = loop.step(events, now_ms, window_override_ms=window_override)
+            switch_events = loop.buffer.pop_price_switch_events()
             runtime.last_state[symbol] = state
             if live_metrics is not None and state is not None:
                 live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
-                diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
+                diagnostics.log(
+                    symbol,
+                    runtime.last_state[symbol],
+                    now_ms,
+                    loop.buffer,
+                    switch_events=switch_events,
+                )
+            if state is None and loop.buffer.active_price_source_id is None:
+                logging.warning(
+                    "Price series unavailable for %s (no eligible source).",
+                    symbol,
+                )
+                if diagnostics is not None:
+                    diagnostics.log_price_series_unavailable(symbol, now_ms, loop.buffer)
             continue
         last_event_ms = runtime.last_event_ms.get(symbol)
         if last_event_ms is None:
@@ -450,17 +663,35 @@ def _update_state(
             continue
         if now_ms - last_event_ms <= cutoff_ms:
             state = loop.step(events, now_ms, window_override_ms=window_override)
+            switch_events = loop.buffer.pop_price_switch_events()
             runtime.last_state[symbol] = state
             if live_metrics is not None and state is not None:
                 live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
-                diagnostics.log(symbol, runtime.last_state[symbol], now_ms, loop.buffer)
+                diagnostics.log(
+                    symbol,
+                    runtime.last_state[symbol],
+                    now_ms,
+                    loop.buffer,
+                    switch_events=switch_events,
+                )
+            if state is None and loop.buffer.active_price_source_id is None:
+                logging.warning(
+                    "Price series unavailable for %s (no eligible source).",
+                    symbol,
+                )
+                if diagnostics is not None:
+                    diagnostics.log_price_series_unavailable(symbol, now_ms, loop.buffer)
+    if runtime.filter_reset_events and diagnostics is not None:
+        diagnostics.log_filter_resets(now_ms, runtime.filter_reset_events)
+    if runtime.filter_reset_events:
+        runtime.filter_reset_events.clear()
 
 
 def _adapter_status(
     symbol: str,
     now_ms: int,
-    adapter: BinanceSpotWSAdapter | BinancePerpWSAdapter | None,
+    adapter: BaseAdapter | None,
     mapping: dict[str, list[str]],
 ) -> AdapterStatus:
     if adapter is None:
@@ -476,6 +707,37 @@ def _adapter_status(
     return AdapterStatus.STALE
 
 
+def _combine_status(statuses: list[AdapterStatus]) -> AdapterStatus:
+    if not statuses:
+        return AdapterStatus.DISCONNECTED
+    if any(status == AdapterStatus.CONNECTED for status in statuses):
+        return AdapterStatus.CONNECTED
+    if any(status == AdapterStatus.STALE for status in statuses):
+        return AdapterStatus.STALE
+    return AdapterStatus.DISCONNECTED
+
+
+def _combine_adapter_stats(stats_list: list[AdapterStats | None]) -> AdapterStats | None:
+    combined = [stats for stats in stats_list if stats is not None]
+    if not combined:
+        return None
+    message_count = sum(stats.message_count for stats in combined)
+    dropped_count = sum(stats.dropped_count for stats in combined)
+    reconnect_count = sum(stats.reconnect_count for stats in combined)
+    active_pairs = sum(stats.active_pairs for stats in combined)
+    total_pairs = sum(stats.total_pairs for stats in combined)
+    tbt_values = [stats.tbt_ms for stats in combined if stats.tbt_ms is not None]
+    tbt_ms = min(tbt_values) if tbt_values else None
+    return AdapterStats(
+        message_count=message_count,
+        dropped_count=dropped_count,
+        reconnect_count=reconnect_count,
+        active_pairs=active_pairs,
+        total_pairs=total_pairs,
+        tbt_ms=tbt_ms,
+    )
+
+
 def _configure_logging() -> None:
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -485,6 +747,19 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[logging.FileHandler(log_path, encoding="utf-8")],
     )
+
+
+_FAULT_LOG: TextIO | None = None
+
+
+def _enable_fault_handler() -> None:
+    global _FAULT_LOG
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    fault_path = log_dir / f"fault-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    _FAULT_LOG = fault_path.open("w", encoding="utf-8")
+    faulthandler.enable(file=_FAULT_LOG, all_threads=True)
+    logging.info("Fault handler enabled (faulthandler -> %s).", fault_path)
 
 
 class DiagnosticLogger:
@@ -508,6 +783,7 @@ class DiagnosticLogger:
         self._base_path.parent.mkdir(exist_ok=True)
         self._file = self._open_new_file()
         self._write_config_meta(self._config)
+        self._write_inference_diagnostics_defaults(self._config)
 
     def _open_new_file(self) -> TextIO:
         suffix = f"-{self._run_id}-p{self._part:02d}.jsonl"
@@ -521,17 +797,70 @@ class DiagnosticLogger:
         self._file.write(json.dumps(meta, separators=(",", ":")) + "\n")
         self._file.flush()
 
+    def _write_inference_diagnostics_defaults(self, config: dict[str, object]) -> None:
+        sources = config.get("source_registry")
+        if not isinstance(sources, dict):
+            return
+        for source_id, details in sources.items():
+            if not isinstance(source_id, str) or not isinstance(details, dict):
+                continue
+            aggressor_mode = details.get("aggressor_mode")
+            record = {
+                "event_type": "inference_diagnostics",
+                "source_id": source_id,
+                "aggressor_mode": aggressor_mode,
+                "inferred_with_bbo_rate": 0.0,
+                "inferred_mid_fallback_rate": 0.0,
+                "inferred_tick_rule_fallback_rate": 0.0,
+                "unknown_side_rate": 0.0,
+                "bbo_age_ms_p50": 0.0,
+                "bbo_age_ms_p95": 0.0,
+            }
+            self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            self._line_count += 1
+        self._file.flush()
+
+    def _rotate_if_needed(self) -> None:
+        if self._line_count < self._max_lines:
+            return
+        self._file.close()
+        self._file = self._open_new_file()
+        # Re-emit runtime config for every rotated file to keep reports self-contained.
+        self._write_config_meta(self._config)
+        self._write_inference_diagnostics_defaults(self._config)
+
     def log(
         self,
         symbol: str,
         state: StateSnapshot | None,
         now_ms: int,
         buffer: RollingEventBuffer,
+        *,
+        switch_events: tuple[PriceSwitchEvent, ...] = (),
     ) -> None:
-        if state is None:
-            return
         symbol_upper = symbol.upper()
         if symbol_upper not in self._symbols:
+            return
+        if state is None:
+            for switch in switch_events:
+                switch_record = {
+                    "event_type": "price_source_switch",
+                    "ts_wall_ms": int(time.time() * 1000),
+                    "now_ms": now_ms,
+                    "symbol": symbol_upper,
+                    "from_source_id": switch.from_source_id,
+                    "to_source_id": switch.to_source_id,
+                    "reason": switch.reason,
+                    "staleness_from_ms": switch.staleness_from_ms,
+                    "staleness_to_ms": switch.staleness_to_ms,
+                    "priority_from": switch.priority_from,
+                    "priority_to": switch.priority_to,
+                    "selector_policy": switch.selector_policy,
+                }
+                self._file.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
+                self._line_count += 1
+            self._file.flush()
+            self._rotate_if_needed()
             return
         record = {
             "ts_wall_ms": int(time.time() * 1000),
@@ -541,6 +870,9 @@ class DiagnosticLogger:
             "window_seconds": state.window_seconds,
             "buffer_event_count": buffer.size,
             "tanh_k": self._tanh_k,
+            "active_price_source_id": state.active_price_source_id,
+            "selector_policy": state.selector_policy,
+            "price_series_side": state.price_series_side,
             "price_series_used": state.price_series_used,
             "spot_fresh": state.spot_fresh,
             "perp_fresh": state.perp_fresh,
@@ -615,17 +947,91 @@ class DiagnosticLogger:
         self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
         self._file.flush()
         self._line_count += 1
-        if self._line_count >= self._max_lines:
-            self._file.close()
-            self._file = self._open_new_file()
-            # Re-emit runtime config for every rotated file to keep reports self-contained.
-            self._write_config_meta(self._config)
+        for switch in switch_events:
+            switch_record = {
+                "event_type": "price_source_switch",
+                "ts_wall_ms": int(time.time() * 1000),
+                "now_ms": now_ms,
+                "symbol": symbol_upper,
+                "from_source_id": switch.from_source_id,
+                "to_source_id": switch.to_source_id,
+                "reason": switch.reason,
+                "staleness_from_ms": switch.staleness_from_ms,
+                "staleness_to_ms": switch.staleness_to_ms,
+                "priority_from": switch.priority_from,
+                "priority_to": switch.priority_to,
+                "selector_policy": switch.selector_policy,
+            }
+            self._file.write(json.dumps(switch_record, separators=(",", ":")) + "\n")
+            self._line_count += 1
+        self._file.flush()
+        self._rotate_if_needed()
+
+    def log_filter_resets(
+        self,
+        now_ms: int,
+        events: list[FilterContextResetEvent],
+    ) -> None:
+        for event in events:
+            record = {
+                "event_type": "filter_context_reset",
+                "ts_wall_ms": int(time.time() * 1000),
+                "now_ms": now_ms,
+                "symbol": event.symbol,
+                "old_mask": list(event.old_mask),
+                "new_mask": list(event.new_mask),
+                "reset_applied": list(event.reset_applied),
+            }
+            self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            self._line_count += 1
+        self._file.flush()
+        self._rotate_if_needed()
+
+    def log_price_series_unavailable(
+        self,
+        symbol: str,
+        now_ms: int,
+        buffer: RollingEventBuffer,
+    ) -> None:
+        record = {
+            "event_type": "price_series_unavailable",
+            "ts_wall_ms": int(time.time() * 1000),
+            "now_ms": now_ms,
+            "symbol": symbol.upper(),
+            "selector_policy": buffer.selector_policy,
+            "active_price_source_id": buffer.active_price_source_id,
+            "price_series_side": buffer.price_series_side,
+            "price_series_used": buffer.price_series_side,
+            "reason": "no_eligible_price_source",
+        }
+        self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+        self._line_count += 1
+        self._file.flush()
+        self._rotate_if_needed()
 
 
 def _runtime_config_map(config: AppConfig) -> dict[str, object]:
+    source_registry = {
+        source_id: {
+            "venue": source.venue,
+            "instrument_class": source.instrument_class,
+            "market_type_for_x": source.market_type_for_x,
+            "price_eligible": source.price_eligible,
+            "price_priority": source.price_priority,
+            "has_size": source.capabilities.has_size,
+            "has_aggressor": source.capabilities.has_aggressor,
+            "aggressor_mode": source.capabilities.aggressor_mode,
+            "quote_mode": source.capabilities.quote_mode,
+        }
+        for source_id, source in config.sources.items()
+    }
     return {
         "update_window_seconds": config.update_window_seconds,
         "tbt_window_multiplier": config.tbt_window_multiplier,
+        "price_selector_policy": config.price_selector_policy,
+        "price_selector_stale_failover_ms": config.price_selector_stale_failover_ms,
+        "price_selector_recovery_confirm_cycles": config.price_selector_recovery_confirm_cycles,
+        "price_selector_switch_cooldown_cycles": config.price_selector_switch_cooldown_cycles,
         "tanh_k": config.tanh_k,
         "scale_window_seconds": config.scale_window_seconds,
         "persist_enabled": config.persist_enabled,
@@ -656,7 +1062,6 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "effort_scale_percentile": config.effort_scale_percentile,
         "effort_scale_min_samples": config.effort_scale_min_samples,
         "size_scale_percentile": config.size_scale_percentile,
-        "spot_price_stale_switch_ticks": config.spot_price_stale_switch_ticks,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -677,6 +1082,7 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "tui_frame_inset_px": config.tui_frame_inset_px,
         "tui_frame_band_inner": config.tui_frame_band_inner,
         "tui_frame_band_outer": config.tui_frame_band_outer,
+        "source_registry": source_registry,
     }
 
 
@@ -684,22 +1090,59 @@ def _report_missing(
     runtime: RuntimeState, supervisor: AdapterSupervisor, *, prefix: str
 ) -> None:
     if supervisor.spot is not None:
-        missing = [
-            runtime.symbol_maps.spot_actual_to_base.get(actual, actual)
-            for actual in supervisor.spot.missing_symbols()
-        ]
-        if missing:
-            logging.warning("%s spot symbols: %s", prefix, ",".join(missing))
+        _log_missing_adapter(
+            prefix,
+            "binance_spot",
+            supervisor.spot,
+            runtime.symbol_maps.spot_actual_to_base,
+        )
     if supervisor.perp is not None:
-        missing = [
-            runtime.symbol_maps.perp_actual_to_base.get(actual, actual)
-            for actual in supervisor.perp.missing_symbols()
-        ]
-        if missing:
-            logging.warning("%s perp symbols: %s", prefix, ",".join(missing))
+        _log_missing_adapter(
+            prefix,
+            "binance_perp",
+            supervisor.perp,
+            runtime.symbol_maps.perp_actual_to_base,
+        )
+    if supervisor.coinbase is not None:
+        coinbase_actual_to_base = _invert_base_to_actual(runtime.coinbase_base_to_actual)
+        _log_missing_adapter(
+            prefix,
+            "coinbase_spot",
+            supervisor.coinbase,
+            coinbase_actual_to_base,
+        )
 
 
-def _map_to_base(item: AdapterEvent, symbol_maps: SymbolMaps) -> str | None:
+def _invert_base_to_actual(mapping: dict[str, list[str]]) -> dict[str, str]:
+    actual_to_base: dict[str, str] = {}
+    for base, actuals in mapping.items():
+        for actual in actuals:
+            actual_to_base[actual] = base
+    return actual_to_base
+
+
+def _log_missing_adapter(
+    prefix: str,
+    adapter_name: str,
+    adapter: BaseAdapter,
+    actual_to_base: dict[str, str],
+) -> None:
+    missing_actuals = list(adapter.missing_symbols())
+    if not missing_actuals:
+        return
+    missing_bases = [
+        actual_to_base.get(actual, actual) for actual in missing_actuals
+    ]
+    logging.warning(
+        "%s %s missing: actual=[%s] base=[%s]",
+        prefix,
+        adapter_name,
+        ",".join(missing_actuals),
+        ",".join(missing_bases),
+    )
+
+
+def _legacy_map_to_base(item: AdapterEvent, symbol_maps: SymbolMaps) -> str | None:
     if item.event.source_id.startswith("binance_spot"):
         return symbol_maps.spot_actual_to_base.get(item.symbol)
     return symbol_maps.perp_actual_to_base.get(item.symbol)
@@ -724,6 +1167,7 @@ def _build_tbt_settings(
     for symbol in runtime.loops:
         spot_actuals = runtime.symbol_maps.spot_base_to_actual.get(symbol, [])
         perp_actuals = runtime.symbol_maps.perp_base_to_actual.get(symbol, [])
+        coinbase_actuals = runtime.coinbase_base_to_actual.get(symbol, [])
         tbt_values: list[float] = []
         if supervisor.spot is not None:
             spot_tbt = supervisor.spot.tbt_min(spot_actuals)
@@ -733,6 +1177,10 @@ def _build_tbt_settings(
             perp_tbt = supervisor.perp.tbt_min(perp_actuals)
             if perp_tbt is not None:
                 tbt_values.append(perp_tbt)
+        if supervisor.coinbase is not None and coinbase_actuals:
+            coinbase_tbt = supervisor.coinbase.tbt_min(coinbase_actuals)
+            if coinbase_tbt is not None:
+                tbt_values.append(coinbase_tbt)
         if tbt_values:
             min_tbt = min(tbt_values)
             cutoffs[symbol] = max(1, int(min_tbt))

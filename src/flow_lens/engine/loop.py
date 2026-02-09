@@ -15,6 +15,7 @@ class EngineLoop:
     symbol: str
     buffer: RollingEventBuffer
     engine: StateEngine
+    source_allowlist: set[str] | None = None
 
     def step(
         self,
@@ -41,7 +42,7 @@ class EngineLoop:
         spot_fresh = spot_count > 0
         perp_fresh = perp_count > 0
 
-        buffer_snapshot = self.buffer.snapshot()
+        buffer_snapshot = self.buffer.snapshot(source_allowlist=self.source_allowlist)
         buffer_agg = aggregate_events(buffer_snapshot)
         frame = FlowFrame(
             symbol=self.symbol,
@@ -49,6 +50,9 @@ class EngineLoop:
             price=price_end,
             price_start=price_start,
             window_seconds=self.buffer.window_delta_ms / 1000.0,
+            active_price_source_id=self.buffer.active_price_source_id,
+            selector_policy=self.buffer.selector_policy,
+            price_series_side=self.buffer.price_series_side,
             price_series_used=price_series,
             spot_fresh=spot_fresh,
             perp_fresh=perp_fresh,

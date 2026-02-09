@@ -76,6 +76,9 @@ class StateSnapshot:
     disp_deadband_active: bool
     spot_fresh: bool
     perp_fresh: bool
+    active_price_source_id: str | None
+    selector_policy: str
+    price_series_side: str
     price_series_used: str
     spot_event_count_window: int
     perp_event_count_window: int
@@ -115,6 +118,11 @@ class StateEngine:
         self._defaults = defaults if defaults is not None else Defaults()
         self._recent_effort: Deque[tuple[int, float]] = deque()
         self._recent_disp_rate: Deque[tuple[int, float]] = deque()
+        self.reset_context()
+
+    def reset_context(self) -> None:
+        self._recent_effort.clear()
+        self._recent_disp_rate.clear()
         self._disp_scale_cache: float | None = None
         self._x_smoothed: float | None = None
         self._y_smoothed: float | None = None
@@ -278,6 +286,9 @@ class StateEngine:
             disp_deadband_active=disp_deadband_active,
             spot_fresh=frame.spot_fresh,
             perp_fresh=frame.perp_fresh,
+            active_price_source_id=frame.active_price_source_id,
+            selector_policy=frame.selector_policy,
+            price_series_side=frame.price_series_side,
             price_series_used=frame.price_series_used,
             spot_event_count_window=frame.spot_event_count_window,
             perp_event_count_window=frame.perp_event_count_window,

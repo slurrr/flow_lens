@@ -126,6 +126,9 @@ def _write_overridden_config(*, base_path: Path, out_path: Path, overrides: dict
     adapters = base_data.get("adapters")
     if not isinstance(adapters, dict) or not adapters:
         raise SystemExit(f"Missing or invalid [adapters] in {base_path}")
+    sources = base_data.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise SystemExit(f"Missing or invalid [sources] in {base_path}")
     runtime = base_data.get("runtime")
     if not isinstance(runtime, dict):
         raise SystemExit(f"Missing or invalid [runtime] in {base_path}")
@@ -157,6 +160,15 @@ def _write_overridden_config(*, base_path: Path, out_path: Path, overrides: dict
         symbols = adapter.get("symbols", [])
         lines.append(f'type = {_format_toml_value(str(adapter_type))}')
         lines.append(f"symbols = {_format_toml_value(list(symbols) if isinstance(symbols, list) else [])}")
+        lines.append("")
+
+    for source_id in sorted(sources.keys()):
+        source = sources.get(source_id)
+        if not isinstance(source, dict):
+            continue
+        lines.append(f"[sources.{source_id}]")
+        for key in sorted(source.keys()):
+            lines.append(f"{key} = {_format_toml_value(source[key])}")
         lines.append("")
 
     lines.append("[runtime]")
@@ -261,4 +273,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

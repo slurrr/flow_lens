@@ -114,7 +114,7 @@ def _init_scenario(
         start_timestamp_ms=now_ms,
         step_ms=sim_step_ms,
     )
-    buffer = RollingEventBuffer(window_delta_ms=window_ms)
+    buffer = RollingEventBuffer(window_delta_ms=window_ms, source_meta={})
     engine = StateEngine()
     loop = EngineLoop(symbol=name, buffer=buffer, engine=engine)
     return loop, adapter, now_ms

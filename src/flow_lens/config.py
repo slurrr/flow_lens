@@ -12,11 +12,40 @@ class AdapterConfig:
     symbols: list[str]
 
 
+AggressorMode = Literal["native", "inferred", "none"]
+QuoteMode = Literal["usd_like", "converted", "foreign"]
+MarketTypeForX = Literal["spot", "perp"]
+
+
+@dataclass(frozen=True)
+class SourceCapabilities:
+    has_size: bool
+    has_aggressor: bool
+    aggressor_mode: AggressorMode
+    quote_mode: QuoteMode
+
+
+@dataclass(frozen=True)
+class SourceConfig:
+    source_id: str
+    venue: str
+    instrument_class: str
+    market_type_for_x: MarketTypeForX
+    price_eligible: bool
+    price_priority: int
+    capabilities: SourceCapabilities
+
+
 @dataclass(frozen=True)
 class AppConfig:
     adapters: Mapping[str, AdapterConfig]
+    sources: Mapping[str, SourceConfig]
     tbt_window_multiplier: float
     update_window_seconds: float
+    price_selector_policy: Literal["priority_sticky"]
+    price_selector_stale_failover_ms: int
+    price_selector_recovery_confirm_cycles: int
+    price_selector_switch_cooldown_cycles: int
     effort_floor_multiplier: float
     effort_floor_ticks: int
     smoothing_dominance_alpha: float
@@ -57,7 +86,6 @@ class AppConfig:
     effort_scale_percentile: float
     effort_scale_min_samples: int
     size_scale_percentile: float
-    spot_price_stale_switch_ticks: int
     tui_min_width: int
     tui_min_height: int
     tui_max_width: int
@@ -76,11 +104,22 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     adapters_section = data.get("adapters", {})
     if not isinstance(adapters_section, dict) or not adapters_section:
         raise ValueError("app.toml must define adapters.")
+    sources_section = data.get("sources", {})
+    if not isinstance(sources_section, dict) or not sources_section:
+        raise ValueError("app.toml must define sources.")
     runtime_section = data.get("runtime", {})
     if not isinstance(runtime_section, dict):
         raise ValueError("runtime config must be a table.")
     tbt_window_multiplier = runtime_section.get("tbt_window_multiplier", 4.0)
     update_window_seconds = runtime_section.get("update_window_seconds", 2.0)
+    price_selector_policy = runtime_section.get("price_selector_policy", "priority_sticky")
+    price_selector_stale_failover_ms = runtime_section.get("price_selector_stale_failover_ms", 6000)
+    price_selector_recovery_confirm_cycles = runtime_section.get(
+        "price_selector_recovery_confirm_cycles", 2
+    )
+    price_selector_switch_cooldown_cycles = runtime_section.get(
+        "price_selector_switch_cooldown_cycles", 1
+    )
     effort_floor_multiplier = runtime_section.get("effort_floor_multiplier", 0.2)
     effort_floor_ticks = runtime_section.get("effort_floor_ticks", 60)
     smoothing_dominance_alpha = runtime_section.get("smoothing_dominance_alpha", 0.15)
@@ -129,7 +168,6 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     effort_scale_percentile = runtime_section.get("effort_scale_percentile", 0.5)
     effort_scale_min_samples = runtime_section.get("effort_scale_min_samples", 20)
     size_scale_percentile = runtime_section.get("size_scale_percentile", effort_scale_percentile)
-    spot_price_stale_switch_ticks = runtime_section.get("spot_price_stale_switch_ticks", 3)
     tui_min_width = runtime_section.get("tui_min_width", 41)
     tui_min_height = runtime_section.get("tui_min_height", 17)
     tui_max_width = runtime_section.get("tui_max_width", 81)
@@ -144,6 +182,22 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.tbt_window_multiplier must be a number.")
     if not isinstance(update_window_seconds, (int, float)):
         raise ValueError("runtime.update_window_seconds must be a number.")
+    if not isinstance(price_selector_policy, str):
+        raise ValueError("runtime.price_selector_policy must be a string.")
+    if price_selector_policy != "priority_sticky":
+        raise ValueError("runtime.price_selector_policy must be 'priority_sticky'.")
+    if not isinstance(price_selector_stale_failover_ms, int):
+        raise ValueError("runtime.price_selector_stale_failover_ms must be an integer.")
+    if not isinstance(price_selector_recovery_confirm_cycles, int):
+        raise ValueError("runtime.price_selector_recovery_confirm_cycles must be an integer.")
+    if not isinstance(price_selector_switch_cooldown_cycles, int):
+        raise ValueError("runtime.price_selector_switch_cooldown_cycles must be an integer.")
+    if price_selector_stale_failover_ms <= 0:
+        raise ValueError("runtime.price_selector_stale_failover_ms must be > 0.")
+    if price_selector_recovery_confirm_cycles <= 0:
+        raise ValueError("runtime.price_selector_recovery_confirm_cycles must be > 0.")
+    if price_selector_switch_cooldown_cycles < 0:
+        raise ValueError("runtime.price_selector_switch_cooldown_cycles must be >= 0.")
     if not isinstance(effort_floor_multiplier, (int, float)):
         raise ValueError("runtime.effort_floor_multiplier must be a number.")
     if not isinstance(effort_floor_ticks, int):
@@ -275,16 +329,12 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.effort_scale_min_samples must be an integer.")
     if not isinstance(size_scale_percentile, (int, float)):
         raise ValueError("runtime.size_scale_percentile must be a number.")
-    if not isinstance(spot_price_stale_switch_ticks, int):
-        raise ValueError("runtime.spot_price_stale_switch_ticks must be an integer.")
     if effort_scale_percentile <= 0 or effort_scale_percentile >= 1:
         raise ValueError("runtime.effort_scale_percentile must be between 0 and 1.")
     if size_scale_percentile <= 0 or size_scale_percentile >= 1:
         raise ValueError("runtime.size_scale_percentile must be between 0 and 1.")
     if effort_scale_min_samples <= 0:
         raise ValueError("runtime.effort_scale_min_samples must be > 0.")
-    if spot_price_stale_switch_ticks <= 0:
-        raise ValueError("runtime.spot_price_stale_switch_ticks must be > 0.")
     if not isinstance(tui_min_width, int):
         raise ValueError("runtime.tui_min_width must be an integer.")
     if not isinstance(tui_min_height, int):
@@ -340,11 +390,18 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
             type=adapter_type,
             symbols=normalized_symbols,
         )
+    sources = _parse_sources(sources_section)
+    _validate_source_registry(sources=sources, adapters=adapters)
 
     return AppConfig(
         adapters=adapters,
+        sources=sources,
         tbt_window_multiplier=float(tbt_window_multiplier),
         update_window_seconds=float(update_window_seconds),
+        price_selector_policy=cast(Literal["priority_sticky"], price_selector_policy),
+        price_selector_stale_failover_ms=int(price_selector_stale_failover_ms),
+        price_selector_recovery_confirm_cycles=int(price_selector_recovery_confirm_cycles),
+        price_selector_switch_cooldown_cycles=int(price_selector_switch_cooldown_cycles),
         effort_floor_multiplier=float(effort_floor_multiplier),
         effort_floor_ticks=int(effort_floor_ticks),
         smoothing_dominance_alpha=float(smoothing_dominance_alpha),
@@ -385,7 +442,6 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         effort_scale_percentile=float(effort_scale_percentile),
         effort_scale_min_samples=int(effort_scale_min_samples),
         size_scale_percentile=float(size_scale_percentile),
-        spot_price_stale_switch_ticks=int(spot_price_stale_switch_ticks),
         tui_min_width=int(tui_min_width),
         tui_min_height=int(tui_min_height),
         tui_max_width=int(tui_max_width),
@@ -397,6 +453,103 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         tui_frame_band_inner=float(tui_frame_band_inner),
         tui_frame_band_outer=float(tui_frame_band_outer),
     )
+
+
+def _parse_sources(section: dict[object, object]) -> dict[str, SourceConfig]:
+    sources: dict[str, SourceConfig] = {}
+    for source_id_raw, source_cfg in section.items():
+        if not isinstance(source_id_raw, str):
+            raise ValueError("sources keys must be strings.")
+        source_id = source_id_raw.strip()
+        if not source_id:
+            raise ValueError("sources keys must be non-empty strings.")
+        if not isinstance(source_cfg, dict):
+            raise ValueError(f"Source {source_id} config must be a table.")
+
+        venue = source_cfg.get("venue")
+        instrument_class = source_cfg.get("instrument_class")
+        market_type_for_x = source_cfg.get("market_type_for_x")
+        price_eligible = source_cfg.get("price_eligible")
+        price_priority = source_cfg.get("price_priority")
+        has_size = source_cfg.get("has_size")
+        has_aggressor = source_cfg.get("has_aggressor")
+        aggressor_mode = source_cfg.get("aggressor_mode")
+        quote_mode = source_cfg.get("quote_mode")
+
+        if not isinstance(venue, str) or not venue.strip():
+            raise ValueError(f"Source {source_id} must define non-empty venue.")
+        if not isinstance(instrument_class, str) or not instrument_class.strip():
+            raise ValueError(f"Source {source_id} must define non-empty instrument_class.")
+        if market_type_for_x not in {"spot", "perp"}:
+            raise ValueError(f"Source {source_id} market_type_for_x must be 'spot' or 'perp'.")
+        if not isinstance(price_eligible, bool):
+            raise ValueError(f"Source {source_id} price_eligible must be a boolean.")
+        if not isinstance(price_priority, int):
+            raise ValueError(f"Source {source_id} price_priority must be an integer.")
+        if not isinstance(has_size, bool):
+            raise ValueError(f"Source {source_id} has_size must be a boolean.")
+        if not isinstance(has_aggressor, bool):
+            raise ValueError(f"Source {source_id} has_aggressor must be a boolean.")
+        if aggressor_mode not in {"native", "inferred", "none"}:
+            raise ValueError(
+                f"Source {source_id} aggressor_mode must be one of: native, inferred, none."
+            )
+        if quote_mode not in {"usd_like", "converted", "foreign"}:
+            raise ValueError(
+                f"Source {source_id} quote_mode must be one of: usd_like, converted, foreign."
+            )
+
+        sources[source_id] = SourceConfig(
+            source_id=source_id,
+            venue=venue.strip(),
+            instrument_class=instrument_class.strip(),
+            market_type_for_x=cast(MarketTypeForX, market_type_for_x),
+            price_eligible=price_eligible,
+            price_priority=price_priority,
+            capabilities=SourceCapabilities(
+                has_size=has_size,
+                has_aggressor=has_aggressor,
+                aggressor_mode=cast(AggressorMode, aggressor_mode),
+                quote_mode=cast(QuoteMode, quote_mode),
+            ),
+        )
+    return sources
+
+
+def _validate_source_registry(
+    *,
+    sources: Mapping[str, SourceConfig],
+    adapters: Mapping[str, AdapterConfig],
+) -> None:
+    if not sources:
+        raise ValueError("Source registry is empty.")
+    missing = sorted(source_id for source_id in adapters if source_id not in sources)
+    if missing:
+        raise ValueError(
+            "Source registry missing adapter source_ids: " + ",".join(missing)
+        )
+    for source_id, source in sources.items():
+        caps = source.capabilities
+        if caps.aggressor_mode == "native" and not caps.has_aggressor:
+            raise ValueError(
+                f"Source {source_id} has_aggressor must be true when aggressor_mode='native'."
+            )
+        if caps.aggressor_mode == "none" and caps.has_aggressor:
+            raise ValueError(
+                f"Source {source_id} has_aggressor must be false when aggressor_mode='none'."
+            )
+        if caps.aggressor_mode == "inferred" and caps.has_aggressor:
+            raise ValueError(
+                f"Source {source_id} has_aggressor must be false when aggressor_mode='inferred'."
+            )
+        if not source.price_eligible and source.price_priority != 0:
+            raise ValueError(
+                f"Source {source_id} must use price_priority=0 when price_eligible=false."
+            )
+        if source.price_eligible and source.price_priority < 0:
+            raise ValueError(
+                f"Source {source_id} price_priority must be >= 0 when price_eligible=true."
+            )
 
 
 def normalize_symbol(symbol: str) -> str:

@@ -103,8 +103,9 @@ def _ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator
 
 
-def _load_records(path: Path) -> list[dict]:
+def _load_records_and_events(path: Path) -> tuple[list[dict], list[dict]]:
     records: list[dict] = []
+    events: list[dict] = []
     try:
         if path.suffix == ".gz":
             handle = gzip.open(path, "rt", encoding="utf-8")
@@ -118,11 +119,32 @@ def _load_records(path: Path) -> list[dict]:
                 record = json.loads(line)
                 if isinstance(record, dict) and "_meta" in record:
                     continue
-                records.append(record)
+                if isinstance(record, dict) and "event_type" in record:
+                    events.append(record)
+                else:
+                    records.append(record)
     except (EOFError, gzip.BadGzipFile, OSError) as exc:
         print(f"warning: skipping unreadable log {path} ({exc})", file=sys.stderr)
-        return []
+        return [], []
+    return records, events
+
+
+def _load_records(path: Path) -> list[dict]:
+    records, _ = _load_records_and_events(path)
     return records
+
+
+def _event_counts_by_symbol(events: Iterable[dict]) -> dict[str, Counter[str]]:
+    counts: dict[str, Counter[str]] = defaultdict(Counter)
+    for event in events:
+        symbol = str(event.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        event_type = str(event.get("event_type", ""))
+        if not event_type:
+            continue
+        counts[symbol][event_type] += 1
+    return counts
 
 
 def _load_config_from_log(path: Path) -> dict[str, object]:
@@ -202,6 +224,10 @@ def _load_config_summary(path: Path) -> dict[str, object]:
     ordered_keys = [
         "update_window_seconds",
         "tbt_window_multiplier",
+        "price_selector_policy",
+        "price_selector_stale_failover_ms",
+        "price_selector_recovery_confirm_cycles",
+        "price_selector_switch_cooldown_cycles",
         "tanh_k",
         "scale_window_seconds",
         "persist_enabled",
@@ -232,7 +258,6 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "effort_scale_percentile",
         "effort_scale_min_samples",
         "size_scale_percentile",
-        "spot_price_stale_switch_ticks",
         "effort_floor_multiplier",
         "effort_floor_ticks",
         "smoothing_dominance_alpha",
@@ -352,12 +377,17 @@ def _write_summary(
     pre_roll_lengths: dict[tuple[str, str], list[float]] = defaultdict(list)
 
     for path in paths:
-        records = _load_records(path)
+        records, events = _load_records_and_events(path)
         grouped = _iter_symbols(records, None)
+        event_counts = _event_counts_by_symbol(events)
         symbol_label, regime_label, scenario_id = _parse_replay_label(path)
         replay_meta = _load_replay_meta(path)
         for symbol, entries in grouped.items():
-            stats = _stats_for_symbol(entries, config=config_values)
+            stats = _stats_for_symbol(
+                entries,
+                config=config_values,
+                event_counts=event_counts,
+            )
             label_symbol = symbol_label if symbol_label != "UNKNOWN" else symbol
             key = (label_symbol, regime_label)
             runs[key] += 1
@@ -379,6 +409,9 @@ def _write_summary(
             )
             aggregated[key]["price_series_base_switch_rate"].append(
                 _as_float(stats.get("price_series_base_switch_rate_per_min"))
+            )
+            aggregated[key]["price_series_unavailable_rate"].append(
+                _as_float(stats.get("price_series_unavailable_per_min"))
             )
             aggregated[key]["air_pocket_active_rate"].append(
                 _as_float(stats.get("air_pocket_active_rate"))
@@ -530,6 +563,8 @@ def _write_summary(
                 f"{_median(aggregated[key]['e_dir_persistence_p50']):.0f}  "
                 "Series switch "
                 f"{_median(aggregated[key]['price_series_switch_rate']):.2f}/m  "
+                "Series unavailable "
+                f"{_median(aggregated[key]['price_series_unavailable_rate']):.2f}/m  "
                 "Spot/perp switch "
                 f"{_median(aggregated[key]['price_series_base_switch_rate']):.2f}/m  "
                 "Air pocket "
@@ -570,6 +605,7 @@ def _stats_for_symbol(
     records: list[dict],
     *,
     config: dict[str, object] | None = None,
+    event_counts: dict[str, Counter[str]] | None = None,
 ) -> dict[str, object]:
     records.sort(key=lambda record: int(record.get("now_ms", 0)))
     out: dict[str, object] = {}
@@ -1055,6 +1091,21 @@ def _stats_for_symbol(
     )
     out["duration_s"] = total_duration_s
     out["duration_min"] = total_duration_s / 60.0 if total_duration_s > 0 else 0.0
+    symbol = str(records[0].get("symbol", "")).upper() if records else ""
+    unavailable_count = 0
+    if event_counts is not None and symbol:
+        unavailable_count = event_counts.get(symbol, Counter()).get(
+            "price_series_unavailable", 0
+        )
+    duration_min = out["duration_min"]
+    duration_min_value = float(duration_min) if isinstance(duration_min, (int, float)) else 0.0
+    out["price_series_unavailable_count"] = unavailable_count
+    out["price_series_unavailable_rate"] = (
+        unavailable_count / len(records) if records else 0.0
+    )
+    out["price_series_unavailable_per_min"] = (
+        unavailable_count / duration_min_value if duration_min_value > 0 else 0.0
+    )
 
     out["persist_input_counts"] = dict(persist_input_counts)
     out["persist_update_mode_counts"] = dict(persist_update_mode_counts)
@@ -1354,8 +1405,9 @@ def main() -> None:
         raise SystemExit(f"Missing log file: {path}")
 
     symbols = {s.strip().upper() for s in args.symbols.split(",") if s.strip()}
-    records = _load_records(path)
+    records, events = _load_records_and_events(path)
     grouped = _iter_symbols(records, symbols if symbols else None)
+    event_counts = _event_counts_by_symbol(events)
 
     output_path = Path(args.out) if args.out else _output_path(symbols)
     config_path = Path(args.config)
@@ -1372,7 +1424,7 @@ def main() -> None:
 
     per_symbol_stats: dict[str, dict[str, object]] = {}
     for symbol, entries in sorted(grouped.items()):
-        stats = _stats_for_symbol(entries, config=config_values)
+        stats = _stats_for_symbol(entries, config=config_values, event_counts=event_counts)
         per_symbol_stats[symbol] = stats
         if symbol in majors:
             k_07_value = stats.get("k_reco_target_0.7", 0.0)
@@ -1414,6 +1466,11 @@ def main() -> None:
             )
             handle.write(f"duration_min: {duration_min_value:.2f}\n")
             handle.write(f"price_series_counts: {stats['price_series_counts']}\n")
+            handle.write(
+                "price_series_unavailable: "
+                f"{stats['price_series_unavailable_count']} "
+                f"(per_min={stats['price_series_unavailable_per_min']:.2f})\n"
+            )
             handle.write(
                 f"spot_fresh_rate: {stats['spot_fresh_rate']:.2f} "
                 f"perp_fresh_rate: {stats['perp_fresh_rate']:.2f}\n"

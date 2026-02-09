@@ -13,8 +13,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 class BinancePerpWSAdapter(BaseAdapter):
-    def __init__(self, *, symbols: list[str]) -> None:
+    def __init__(self, *, symbols: list[str], symbol_to_base: dict[str, str]) -> None:
         super().__init__(symbols=symbols)
+        self._symbol_to_base = {
+            symbol.upper(): base.upper() for symbol, base in symbol_to_base.items()
+        }
         self._streams = [f"{symbol.lower()}@aggTrade" for symbol in symbols]
 
     async def _stream_once(self) -> AsyncIterator[AdapterEvent]:
@@ -51,6 +54,10 @@ class BinancePerpWSAdapter(BaseAdapter):
                     )
                     self._mark_event(symbol, timestamp)
                     self._mark_message(dropped=False)
-                    yield AdapterEvent(symbol=symbol, event=event)
+                    yield AdapterEvent(
+                        symbol=symbol,
+                        base_symbol=self._symbol_to_base.get(symbol.upper()),
+                        event=event,
+                    )
             finally:
                 self._mark_disconnected()
