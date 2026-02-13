@@ -110,7 +110,7 @@ Fields (publicTrade rows):
 - ts: `T` (row) or `ts` (envelope) (ms)
 - price: `p`
 - size: `v`
-- aggressor: not always explicit; adapter implementation may require an inference policy if we treat it as directional.
+- aggressor: `S` (`Buy`/`Sell`) observed on both spot + linear publicTrade streams; treat as taker-side (aggressor) in Phase 1.
 
 ---
 
@@ -195,4 +195,3 @@ Notes:
 
 - KRW quote means `quote_mode=foreign`; this is usually excluded from USD-like composite references and treated as a
   regional signal only unless conversion plumbing is added.
-

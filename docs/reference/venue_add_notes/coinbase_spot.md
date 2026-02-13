@@ -18,7 +18,7 @@ Checklist:
 - Aggressor mode: `native` (Coinbase match messages include `side`)
 - Price eligible + priority:
   - `price_eligible = true`
-  - `price_priority = 90` (secondary to `binance_spot`=100 for Phase 1 stability)
+  - `price_priority = 100` (primary spot reference; above `binance_spot`=90 and `bybit_spot`=70 in current staging)
 
 ## 1) Endpoints / Subscriptions
 
@@ -87,7 +87,7 @@ Assumption:
 - `market_type_for_x = "spot"`
 - `price_eligible = true`
 - `price_priority = <TBD>`
-- `price_priority = 90`
+- `price_priority = 100`
 - `has_size = true`
 - `has_aggressor = true`
 - `aggressor_mode = "native"`

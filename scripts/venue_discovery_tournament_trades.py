@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import gzip
 import json
 import math
@@ -32,28 +33,40 @@ class Reservoir:
     seed: int
     _values: list[float] = field(default_factory=list)
     _n_seen: int = 0
+    _sorted_cache: list[float] = field(default_factory=list)
 
     def add(self, value: float) -> None:
         self._n_seen += 1
         if len(self._values) < self.capacity:
             self._values.append(value)
+            bisect.insort(self._sorted_cache, value)
             return
         # deterministic-ish reservoir: use a simple LCG via seed.
         self.seed = (1103515245 * self.seed + 12345) & 0x7FFFFFFF
         j = self.seed % self._n_seen
         if j < self.capacity:
+            old = self._values[j]
             self._values[j] = value
+            idx = bisect.bisect_left(self._sorted_cache, old)
+            if idx < len(self._sorted_cache):
+                self._sorted_cache.pop(idx)
+                bisect.insort(self._sorted_cache, value)
+            else:
+                # Safety fallback for unexpected float edge cases.
+                self._sorted_cache = sorted(self._values)
+
+    def median(self) -> float:
+        return self.pct(0.5)
 
     def pct(self, pct: float) -> float:
-        if not self._values:
+        if not self._sorted_cache:
             return 0.0
-        values = sorted(self._values)
         if pct <= 0:
-            return values[0]
+            return self._sorted_cache[0]
         if pct >= 1:
-            return values[-1]
-        idx = int(round(pct * (len(values) - 1)))
-        return values[idx]
+            return self._sorted_cache[-1]
+        idx = int(round(pct * (len(self._sorted_cache) - 1)))
+        return self._sorted_cache[idx]
 
 
 @dataclass
@@ -144,12 +157,7 @@ def _weights(value: str) -> dict[Regime, float]:
 
 def _series_time_offset_ms(recv_minus_exchange_ms: Reservoir) -> float:
     # Center estimate; reservoir is already a sample.
-    if not recv_minus_exchange_ms._values:
-        return 0.0
-    try:
-        return float(statistics.median(recv_minus_exchange_ms._values))
-    except statistics.StatisticsError:
-        return 0.0
+    return float(recv_minus_exchange_ms.median())
 
 
 def _effective_ts_ms(ts_exchange_ms: int, ts_recv_ms: int, *, timebase: Timebase, offset_ms: float) -> int:
@@ -332,9 +340,12 @@ def _pairwise_tournament(
     max_stale_buckets: int,
 ) -> dict[tuple[str, str], dict[Regime, PairCounts]]:
     results: dict[tuple[str, str], dict[Regime, PairCounts]] = {}
+    pair_defs: list[tuple[str, str, int]] = []
     for i, a in enumerate(candidates):
         for b in candidates[i + 1 :]:
             results[(a, b)] = {"impulse": PairCounts(), "transition": PairCounts(), "calm": PairCounts()}
+            jitter_guard_ms = max(jitter_guard_ms_default, int(jitter_p95.get(a, 0.0)), int(jitter_p95.get(b, 0.0)))
+            pair_defs.append((a, b, max(0, jitter_guard_ms // bucket_ms)))
 
     r_ref = _compute_returns(ref_px, horizon_buckets=dir_horizon_buckets)
 
@@ -359,63 +370,51 @@ def _pairwise_tournament(
 
         confirm_buckets = confirm_primary_buckets if e.regime != "calm" else confirm_secondary_buckets
 
-        for i, a in enumerate(candidates):
-            for b in candidates[i + 1 :]:
-                rc = results[(a, b)][e.regime]
-                px_a = series_px.get(a)
-                px_b = series_px.get(b)
-                age_a = series_age.get(a)
-                age_b = series_age.get(b)
-                if px_a is None or px_b is None or age_a is None or age_b is None:
-                    rc.no_contest += 1
-                    continue
+        crossings: dict[str, int | None] = {}
+        for candidate in candidates:
+            px = series_px.get(candidate)
+            age = series_age.get(candidate)
+            if px is None or age is None:
+                crossings[candidate] = None
+                continue
+            crossings[candidate] = _first_crossing(
+                px,
+                age,
+                t0=t0,
+                start=e.start_bucket,
+                end=e.end_bucket,
+                dir_sign=dir_sign,
+                required_move=required_move,
+                cross_frac=cross_frac,
+                max_stale_buckets=max_stale_buckets,
+            )
 
-                t_a = _first_crossing(
-                    px_a,
-                    age_a,
-                    t0=t0,
-                    start=e.start_bucket,
-                    end=e.end_bucket,
-                    dir_sign=dir_sign,
-                    required_move=required_move,
-                    cross_frac=cross_frac,
-                    max_stale_buckets=max_stale_buckets,
-                )
-                t_b = _first_crossing(
-                    px_b,
-                    age_b,
-                    t0=t0,
-                    start=e.start_bucket,
-                    end=e.end_bucket,
-                    dir_sign=dir_sign,
-                    required_move=required_move,
-                    cross_frac=cross_frac,
-                    max_stale_buckets=max_stale_buckets,
-                )
-                if t_a is None or t_b is None:
-                    rc.no_contest += 1
-                    continue
+        for a, b, jitter_guard_buckets in pair_defs:
+            rc = results[(a, b)][e.regime]
+            t_a = crossings.get(a)
+            t_b = crossings.get(b)
+            if t_a is None or t_b is None:
+                rc.no_contest += 1
+                continue
 
-                rc.contests += 1
-                jitter_guard_ms = max(jitter_guard_ms_default, int(jitter_p95.get(a, 0.0)), int(jitter_p95.get(b, 0.0)))
-                jitter_guard_buckets = max(0, jitter_guard_ms // bucket_ms)
+            rc.contests += 1
 
-                dt = t_b - t_a
-                if dt == 0:
-                    rc.ties += 1
-                    continue
-                if dt > 0:
-                    if (t_a + jitter_guard_buckets) < t_b and dt <= confirm_buckets:
-                        rc.a_wins += 1
-                        rc.lead_times_ms_a.append(dt * bucket_ms)
-                    else:
-                        rc.ties += 1
+            dt = t_b - t_a
+            if dt == 0:
+                rc.ties += 1
+                continue
+            if dt > 0:
+                if (t_a + jitter_guard_buckets) < t_b and dt <= confirm_buckets:
+                    rc.a_wins += 1
+                    rc.lead_times_ms_a.append(dt * bucket_ms)
                 else:
-                    if (t_b + jitter_guard_buckets) < t_a and (-dt) <= confirm_buckets:
-                        rc.b_wins += 1
-                        rc.lead_times_ms_b.append((-dt) * bucket_ms)
-                    else:
-                        rc.ties += 1
+                    rc.ties += 1
+            else:
+                if (t_b + jitter_guard_buckets) < t_a and (-dt) <= confirm_buckets:
+                    rc.b_wins += 1
+                    rc.lead_times_ms_b.append((-dt) * bucket_ms)
+                else:
+                    rc.ties += 1
 
     return results
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from flow_lens.adapters.base import AdapterEvent, AdapterStats, AdapterStatus, BaseAdapter
 from flow_lens.adapters.binance_perp_ws import BinancePerpWSAdapter
 from flow_lens.adapters.binance_spot_ws import BinanceSpotWSAdapter
+from flow_lens.adapters.bybit_perp_ws import BybitPerpWSAdapter
+from flow_lens.adapters.bybit_spot_ws import BybitSpotWSAdapter
 from flow_lens.adapters.coinbase_spot_ws import CoinbaseSpotWSAdapter
 
 __all__ = [
@@ -12,5 +14,7 @@ __all__ = [
     "BaseAdapter",
     "BinancePerpWSAdapter",
     "BinanceSpotWSAdapter",
+    "BybitPerpWSAdapter",
+    "BybitSpotWSAdapter",
     "CoinbaseSpotWSAdapter",
 ]

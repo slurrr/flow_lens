@@ -16,12 +16,24 @@ symbols = [
   "BTC",
 ]
 
+[adapters.bybit_spot]
+type = "bybit_spot_ws"
+symbols = [
+  "BTC",
+]
+
+[adapters.bybit_perp]
+type = "bybit_perp_ws"
+symbols = [
+  "BTC",
+]
+
 [sources.binance_spot]
 venue = "binance"
 instrument_class = "spot"
 market_type_for_x = "spot"
 price_eligible = true
-price_priority = 100
+price_priority = 90
 has_size = true
 has_aggressor = true
 aggressor_mode = "native"
@@ -43,7 +55,29 @@ venue = "coinbase"
 instrument_class = "spot"
 market_type_for_x = "spot"
 price_eligible = true
-price_priority = 90
+price_priority = 100
+has_size = true
+has_aggressor = true
+aggressor_mode = "native"
+quote_mode = "usd_like"
+
+[sources.bybit_spot]
+venue = "bybit"
+instrument_class = "spot"
+market_type_for_x = "spot"
+price_eligible = true
+price_priority = 70
+has_size = true
+has_aggressor = true
+aggressor_mode = "native"
+quote_mode = "usd_like"
+
+[sources.bybit_perp]
+venue = "bybit"
+instrument_class = "perp"
+market_type_for_x = "perp"
+price_eligible = true
+price_priority = 9
 has_size = true
 has_aggressor = true
 aggressor_mode = "native"

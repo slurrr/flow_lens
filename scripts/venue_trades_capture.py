@@ -489,26 +489,37 @@ def _trade_from_payload(
     if venue == "gate":
         # Best-effort: spot.trades and futures.trades updates include array result rows.
         result = payload.get("result")
-        if not isinstance(result, list):
+        rows: list[dict[str, Any]]
+        if isinstance(result, list):
+            rows = [row for row in result if isinstance(row, dict)]
+        elif isinstance(result, dict):
+            # Gate spot commonly uses a single dict result (not a list).
+            rows = [result]
+        else:
             return []
         # Spot rows often: {"id":..., "create_time_ms":..., "price":"..", "amount":".."}
         # Futures rows often: {"id":..., "create_time_ms":..., "price":"..", "size":..}
-        for row in result:
-            if not isinstance(row, dict):
-                continue
+        for row in rows:
             price = _as_float(row.get("price"))
             qty = _as_float(row.get("amount") or row.get("size"))
             if price is None:
                 continue
-            try:
-                raw_ts = int(row.get("create_time_ms") or row.get("create_time") or 0)
-            except (TypeError, ValueError):
-                raw_ts = 0
-            if raw_ts <= 0:
+            raw_ts = _as_float(
+                row.get("create_time_ms")
+                or row.get("time_ms")
+                or row.get("t")
+                or row.get("create_time")
+                or row.get("time")
+                or payload.get("time_ms")
+                or payload.get("t")
+                or payload.get("time")
+                or 0
+            )
+            if raw_ts is None or raw_ts <= 0:
                 ts_venue_ms = None
             else:
                 # Gate sometimes provides seconds in create_time; normalize to ms if needed.
-                ts_venue_ms = raw_ts * 1000 if raw_ts < 10_000_000_000 else raw_ts
+                ts_venue_ms = int(raw_ts * 1000) if raw_ts < 10_000_000_000 else int(raw_ts)
             ts_exchange_ms = ts_venue_ms if ts_venue_ms is not None else recv_ms
             q = float(qty) if qty is not None else 0.0
             notional = float(price) * q if q > 0 else 0.0
@@ -687,6 +698,8 @@ async def _ws_run(
     hyperliquid_ts_mode: str,
     hyperliquid_debug_path: Path | None,
     hyperliquid_debug_lock: asyncio.Lock | None,
+    gate_debug_path: Path | None,
+    gate_debug_lock: asyncio.Lock | None,
 ) -> None:
     venue = candidate.venue
     market_type = candidate.market_type
@@ -750,130 +763,156 @@ async def _ws_run(
     while _now_ms() < stop_at_ms:
         try:
             conn_id += 1
-            async with websockets.connect(url, ping_interval=20, ping_timeout=10, open_timeout=5) as ws:
-                periodic_task: asyncio.Task[None] | None = None
-                try:
-                    if subscribe_payload is not None:
-                        await ws.send(json.dumps(subscribe_payload, separators=(",", ":")))
-                    if periodic_payload is not None and periodic_every_s > 0:
-                        periodic_task = asyncio.create_task(
-                            _send_periodic(ws, payload=periodic_payload, every_s=periodic_every_s, stop_at_ms=stop_at_ms)
-                        )
+            ws = await asyncio.wait_for(
+                websockets.connect(url, ping_interval=20, ping_timeout=10, open_timeout=5),
+                timeout=8,
+            )
+            periodic_task: asyncio.Task[None] | None = None
+            try:
+                if subscribe_payload is not None:
+                    await ws.send(json.dumps(subscribe_payload, separators=(",", ":")))
+                if periodic_payload is not None and periodic_every_s > 0:
+                    periodic_task = asyncio.create_task(
+                        _send_periodic(ws, payload=periodic_payload, every_s=periodic_every_s, stop_at_ms=stop_at_ms)
+                    )
 
-                    last_hl_recv_ms: int | None = None
-                    if venue == "hyperliquid" and hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
-                        async with hyperliquid_debug_lock:
-                            with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
+                last_hl_recv_ms: int | None = None
+                if venue == "hyperliquid" and hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
+                    async with hyperliquid_debug_lock:
+                        with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
+                            f.write(
+                                json.dumps(
+                                    {
+                                        "_event": "conn_open",
+                                        "conn_id": conn_id,
+                                        "candidate_id": candidate.candidate_id,
+                                        "base_symbol": base_symbol,
+                                        "ts_recv_ms": _now_ms(),
+                                    },
+                                    separators=(",", ":"),
+                                )
+                                + "\n"
+                            )
+
+                while _now_ms() < stop_at_ms:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                    recv_ms = _now_ms()
+                    text = _raw_text(raw)
+                    if text is None:
+                        continue
+                    try:
+                        payload = json.loads(text)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if venue == "gate" and gate_debug_path is not None and gate_debug_lock is not None:
+                        async with gate_debug_lock:
+                            with gate_debug_path.open("a", encoding="utf-8") as f:
                                 f.write(
                                     json.dumps(
                                         {
-                                            "_event": "conn_open",
+                                            "_event": "gate_msg",
                                             "conn_id": conn_id,
                                             "candidate_id": candidate.candidate_id,
+                                            "market_type": market_type,
                                             "base_symbol": base_symbol,
-                                            "ts_recv_ms": _now_ms(),
+                                            "ts_recv_ms": recv_ms,
+                                            "payload": payload,
                                         },
                                         separators=(",", ":"),
                                     )
                                     + "\n"
                                 )
 
-                    while _now_ms() < stop_at_ms:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                        recv_ms = _now_ms()
-                        text = _raw_text(raw)
-                        if text is None:
-                            continue
-                        try:
-                            payload = json.loads(text)
-                        except json.JSONDecodeError:
-                            continue
+                    events: list[dict[str, Any]] = []
+                    if isinstance(payload, dict):
+                        events = [payload]
+                    elif isinstance(payload, list):
+                        for item in payload:
+                            if isinstance(item, dict):
+                                events.append(item)
+                    else:
+                        continue
 
-                        events: list[dict[str, Any]] = []
-                        if isinstance(payload, dict):
-                            events = [payload]
-                        elif isinstance(payload, list):
-                            for item in payload:
-                                if isinstance(item, dict):
-                                    events.append(item)
-                        else:
-                            continue
+                    for event in events:
+                        # Optional Hyperliquid message-level debugging:
+                        # trade feeds can be batchy, include recent-history snapshots, or resend prints.
+                        # We log per-message min/max venue timestamp for the coin, plus emitted count.
+                        hl_rows_for_coin = 0
+                        hl_min_venue_ms: int | None = None
+                        hl_max_venue_ms: int | None = None
+                        if (
+                            venue == "hyperliquid"
+                            and hyperliquid_debug_path is not None
+                            and hyperliquid_debug_lock is not None
+                            and event.get("channel") == "trades"
+                        ):
+                            data = event.get("data")
+                            if isinstance(data, list):
+                                for row in data:
+                                    if not isinstance(row, dict):
+                                        continue
+                                    if row.get("coin") != base_symbol:
+                                        continue
+                                    hl_rows_for_coin += 1
+                                    try:
+                                        t = int(row.get("time") or 0)
+                                    except (TypeError, ValueError):
+                                        continue
+                                    if t <= 0:
+                                        continue
+                                    if hl_min_venue_ms is None or t < hl_min_venue_ms:
+                                        hl_min_venue_ms = t
+                                    if hl_max_venue_ms is None or t > hl_max_venue_ms:
+                                        hl_max_venue_ms = t
 
-                        for event in events:
-                            # Optional Hyperliquid message-level debugging:
-                            # trade feeds can be batchy, include recent-history snapshots, or resend prints.
-                            # We log per-message min/max venue timestamp for the coin, plus emitted count.
-                            hl_rows_for_coin = 0
-                            hl_min_venue_ms: int | None = None
-                            hl_max_venue_ms: int | None = None
-                            if (
-                                venue == "hyperliquid"
-                                and hyperliquid_debug_path is not None
-                                and hyperliquid_debug_lock is not None
-                                and event.get("channel") == "trades"
-                            ):
-                                data = event.get("data")
-                                if isinstance(data, list):
-                                    for row in data:
-                                        if not isinstance(row, dict):
-                                            continue
-                                        if row.get("coin") != base_symbol:
-                                            continue
-                                        hl_rows_for_coin += 1
-                                        try:
-                                            t = int(row.get("time") or 0)
-                                        except (TypeError, ValueError):
-                                            continue
-                                        if t <= 0:
-                                            continue
-                                        if hl_min_venue_ms is None or t < hl_min_venue_ms:
-                                            hl_min_venue_ms = t
-                                        if hl_max_venue_ms is None or t > hl_max_venue_ms:
-                                            hl_max_venue_ms = t
-
-                            trades = _trade_from_payload(
-                                candidate,
-                                event,
-                                recv_ms=recv_ms,
-                                hyperliquid_ts_mode=hyperliquid_ts_mode,
-                                hyperliquid_dedupe=hyperliquid_dedupe,
-                            )
-                            if venue == "hyperliquid" and hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
-                                gap_ms = (recv_ms - last_hl_recv_ms) if last_hl_recv_ms is not None else None
-                                last_hl_recv_ms = recv_ms
-                                async with hyperliquid_debug_lock:
-                                    with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
-                                        f.write(
-                                            json.dumps(
-                                                {
-                                                    "_event": "hl_msg",
-                                                    "conn_id": conn_id,
-                                                    "candidate_id": candidate.candidate_id,
-                                                    "base_symbol": base_symbol,
-                                                    "ts_recv_ms": recv_ms,
-                                                    "rows_for_coin": hl_rows_for_coin,
-                                                    "min_ts_venue_ms": hl_min_venue_ms,
-                                                    "max_ts_venue_ms": hl_max_venue_ms,
-                                                    "recv_minus_max_venue_ms": (recv_ms - hl_max_venue_ms)
-                                                    if hl_max_venue_ms is not None
-                                                    else None,
-                                                    "recv_gap_ms": gap_ms,
-                                                    "emitted_trades": len(trades),
-                                                },
-                                                separators=(",", ":"),
-                                            )
-                                            + "\n"
+                        trades = _trade_from_payload(
+                            candidate,
+                            event,
+                            recv_ms=recv_ms,
+                            hyperliquid_ts_mode=hyperliquid_ts_mode,
+                            hyperliquid_dedupe=hyperliquid_dedupe,
+                        )
+                        if venue == "hyperliquid" and hyperliquid_debug_path is not None and hyperliquid_debug_lock is not None:
+                            gap_ms = (recv_ms - last_hl_recv_ms) if last_hl_recv_ms is not None else None
+                            last_hl_recv_ms = recv_ms
+                            async with hyperliquid_debug_lock:
+                                with hyperliquid_debug_path.open("a", encoding="utf-8") as f:
+                                    f.write(
+                                        json.dumps(
+                                            {
+                                                "_event": "hl_msg",
+                                                "conn_id": conn_id,
+                                                "candidate_id": candidate.candidate_id,
+                                                "base_symbol": base_symbol,
+                                                "ts_recv_ms": recv_ms,
+                                                "rows_for_coin": hl_rows_for_coin,
+                                                "min_ts_venue_ms": hl_min_venue_ms,
+                                                "max_ts_venue_ms": hl_max_venue_ms,
+                                                "recv_minus_max_venue_ms": (recv_ms - hl_max_venue_ms)
+                                                if hl_max_venue_ms is not None
+                                                else None,
+                                                "recv_gap_ms": gap_ms,
+                                                "emitted_trades": len(trades),
+                                            },
+                                            separators=(",", ":"),
                                         )
+                                        + "\n"
+                                    )
 
-                            for trade in trades:
-                                await out_queue.put(trade)
-                finally:
-                    if periodic_task is not None:
-                        periodic_task.cancel()
-                        await asyncio.gather(periodic_task, return_exceptions=True)
+                        for trade in trades:
+                            await out_queue.put(trade)
+            finally:
+                if periodic_task is not None:
+                    periodic_task.cancel()
+                    await asyncio.gather(periodic_task, return_exceptions=True)
+                await ws.close()
             backoff_s = 1.0
         except (asyncio.TimeoutError, OSError, websockets.WebSocketException):
-            await asyncio.sleep(backoff_s)
+            remaining_s = max(0.0, (stop_at_ms - _now_ms()) / 1000.0)
+            if remaining_s <= 0:
+                return
+            await asyncio.sleep(min(backoff_s, remaining_s))
             backoff_s = min(10.0, backoff_s * 1.7)
 
 
@@ -1008,6 +1047,11 @@ async def main_async() -> int:
         default="sdk",
         help="How to connect for hyperliquid_perp (default: sdk).",
     )
+    parser.add_argument(
+        "--debug-gate",
+        action="store_true",
+        help="Write Gate raw message-level debug jsonl into the run_dir (default: disabled).",
+    )
     args = parser.parse_args()
 
     base_symbols = _parse_symbol_list(args.symbols)
@@ -1052,6 +1096,27 @@ async def main_async() -> int:
             encoding="utf-8",
         )
         hl_debug_lock = asyncio.Lock()
+
+    gate_debug_path: Path | None = None
+    gate_debug_lock: asyncio.Lock | None = None
+    if bool(args.debug_gate):
+        gate_debug_path = out_dir / "gate_debug.jsonl"
+        gate_debug_path.write_text(
+            json.dumps(
+                {
+                    "_meta": {
+                        "type": "gate_debug",
+                        "created_at_ms": start_ms,
+                        "symbols": base_symbols,
+                        "candidates": candidate_ids,
+                    }
+                },
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        gate_debug_lock = asyncio.Lock()
     tasks = [
         asyncio.create_task(
             _hyperliquid_sdk_run(
@@ -1072,6 +1137,8 @@ async def main_async() -> int:
                 hyperliquid_ts_mode=hl_mode,
                 hyperliquid_debug_path=hl_debug_path,
                 hyperliquid_debug_lock=hl_debug_lock,
+                gate_debug_path=gate_debug_path,
+                gate_debug_lock=gate_debug_lock,
             )
         )
         for c in candidates
@@ -1102,7 +1169,11 @@ async def main_async() -> int:
 
     for t in tasks:
         t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=3.0)
+    except asyncio.TimeoutError:
+        # Some network stack operations can be slow/uninterruptible; don't hang the capture on shutdown.
+        pass
 
     print(f"run_dir: {out_dir}")
     print(f"raw: {raw_path}")

@@ -21,6 +21,8 @@ from flow_lens.adapters import (
     BaseAdapter,
     BinancePerpWSAdapter,
     BinanceSpotWSAdapter,
+    BybitPerpWSAdapter,
+    BybitSpotWSAdapter,
     CoinbaseSpotWSAdapter,
 )
 from flow_lens.config import AppConfig, load_app_config
@@ -52,6 +54,7 @@ from flow_lens.symbols import (
     BinanceSymbolResolver,
     QuotePair,
     SymbolMaps,
+    SymbolResolution,
     build_symbol_maps,
     log_resolution,
 )
@@ -71,6 +74,8 @@ class RuntimeState:
     source_allowlists: dict[str, set[str] | None]
     filter_reset_events: list["FilterContextResetEvent"]
     coinbase_base_to_actual: dict[str, list[str]]
+    bybit_spot_base_to_actual: dict[str, list[str]]
+    bybit_perp_base_to_actual: dict[str, list[str]]
 
 
 @dataclass(frozen=True)
@@ -185,11 +190,19 @@ def _run(
     _log_source_registry(config)
     base_symbols = _collect_symbols(config)
 
+    binance_spot_enabled = "binance_spot" in config.adapters
+    binance_perp_enabled = "binance_perp" in config.adapters
     resolver = BinanceSymbolResolver()
-    spot_resolution = resolver.resolve_spot(config.adapters["binance_spot"].symbols)
-    perp_resolution = resolver.resolve_perp(config.adapters["binance_perp"].symbols)
-    log_resolution("Spot", spot_resolution)
-    log_resolution("Perp", perp_resolution)
+    if binance_spot_enabled:
+        spot_resolution = resolver.resolve_spot(config.adapters["binance_spot"].symbols)
+        log_resolution("Spot", spot_resolution)
+    else:
+        spot_resolution = _empty_resolution()
+    if binance_perp_enabled:
+        perp_resolution = resolver.resolve_perp(config.adapters["binance_perp"].symbols)
+        log_resolution("Perp", perp_resolution)
+    else:
+        perp_resolution = _empty_resolution()
 
     symbol_maps = build_symbol_maps(spot_resolution, perp_resolution)
     source_meta = _build_price_source_meta(config)
@@ -200,7 +213,23 @@ def _run(
         if "coinbase_spot" in config.adapters
         else []
     )
+    bybit_spot_actuals, bybit_spot_symbol_to_base, bybit_spot_base_to_actual = (
+        _bybit_symbol_maps(
+            config.adapters["bybit_spot"].symbols
+            if "bybit_spot" in config.adapters
+            else []
+        )
+    )
+    bybit_perp_actuals, bybit_perp_symbol_to_base, bybit_perp_base_to_actual = (
+        _bybit_symbol_maps(
+            config.adapters["bybit_perp"].symbols
+            if "bybit_perp" in config.adapters
+            else []
+        )
+    )
     supervisor.start(
+        binance_spot_enabled=binance_spot_enabled,
+        binance_perp_enabled=binance_perp_enabled,
         spot_symbols=_flatten(symbol_maps.spot_base_to_actual),
         spot_symbol_to_base=symbol_maps.spot_actual_to_base,
         spot_quotes=symbol_maps.spot_actual_to_quote,
@@ -209,6 +238,10 @@ def _run(
         perp_symbols=_flatten(symbol_maps.perp_base_to_actual),
         perp_symbol_to_base=symbol_maps.perp_actual_to_base,
         coinbase_symbols=sorted(coinbase_product_map.values()),
+        bybit_spot_symbols=bybit_spot_actuals,
+        bybit_spot_symbol_to_base=bybit_spot_symbol_to_base,
+        bybit_perp_symbols=bybit_perp_actuals,
+        bybit_perp_symbol_to_base=bybit_perp_symbol_to_base,
     )
 
     runtime = _init_runtime(
@@ -221,6 +254,8 @@ def _run(
         selector_recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
         selector_switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
         coinbase_base_to_actual=_coinbase_base_to_actual(coinbase_product_map),
+        bybit_spot_base_to_actual=bybit_spot_base_to_actual,
+        bybit_perp_base_to_actual=bybit_perp_base_to_actual,
     )
     input_state = InputState(symbols=base_symbols)
     renderer = Renderer(
@@ -307,24 +342,56 @@ def _run(
                         supervisor.coinbase,
                         runtime.coinbase_base_to_actual,
                     ),
+                    _adapter_status(
+                        symbol,
+                        now_ms,
+                        supervisor.bybit_spot,
+                        runtime.bybit_spot_base_to_actual,
+                    ),
                 ]
             )
-            status_perp = _adapter_status(
-                symbol, now_ms, supervisor.perp, runtime.symbol_maps.perp_base_to_actual
+            status_perp = _combine_status(
+                [
+                    _adapter_status(
+                        symbol,
+                        now_ms,
+                        supervisor.perp,
+                        runtime.symbol_maps.perp_base_to_actual,
+                    ),
+                    _adapter_status(
+                        symbol,
+                        now_ms,
+                        supervisor.bybit_perp,
+                        runtime.bybit_perp_base_to_actual,
+                    ),
+                ]
             )
             spot_stats = None
             perp_stats = None
             spot_actuals = runtime.symbol_maps.spot_base_to_actual.get(symbol, [])
             perp_actuals = runtime.symbol_maps.perp_base_to_actual.get(symbol, [])
             coinbase_actuals = runtime.coinbase_base_to_actual.get(symbol, [])
+            bybit_spot_actuals = runtime.bybit_spot_base_to_actual.get(symbol, [])
+            bybit_perp_actuals = runtime.bybit_perp_base_to_actual.get(symbol, [])
             if supervisor.spot is not None:
                 spot_stats = supervisor.spot.stats_for(now_ms, symbols=spot_actuals)
             coinbase_stats = None
             if supervisor.coinbase is not None:
                 coinbase_stats = supervisor.coinbase.stats_for(now_ms, symbols=coinbase_actuals)
-            spot_stats = _combine_adapter_stats([spot_stats, coinbase_stats])
+            bybit_spot_stats = None
+            if supervisor.bybit_spot is not None:
+                bybit_spot_stats = supervisor.bybit_spot.stats_for(
+                    now_ms, symbols=bybit_spot_actuals
+                )
+            spot_stats = _combine_adapter_stats([spot_stats, coinbase_stats, bybit_spot_stats])
             if supervisor.perp is not None:
                 perp_stats = supervisor.perp.stats_for(now_ms, symbols=perp_actuals)
+            bybit_perp_stats = None
+            if supervisor.bybit_perp is not None:
+                bybit_perp_stats = supervisor.bybit_perp.stats_for(
+                    now_ms, symbols=bybit_perp_actuals
+                )
+            perp_stats = _combine_adapter_stats([perp_stats, bybit_perp_stats])
             metrics_snapshot = live_metrics.snapshot(symbol)
             renderer.draw(
                 stdscr,
@@ -376,6 +443,33 @@ def _coinbase_base_to_actual(mapping: dict[str, str]) -> dict[str, list[str]]:
     return {base: [product] for base, product in mapping.items()}
 
 
+def _empty_resolution() -> SymbolResolution:
+    return SymbolResolution(resolved={}, meta={}, missing=[], quote_pairs={})
+
+
+def _bybit_symbol_maps(
+    symbols: list[str],
+) -> tuple[list[str], dict[str, str], dict[str, list[str]]]:
+    actuals: list[str] = []
+    symbol_to_base: dict[str, str] = {}
+    base_to_actual: dict[str, list[str]] = {}
+    for symbol in symbols:
+        candidate = symbol.strip().upper()
+        if not candidate:
+            continue
+        if candidate.endswith("USDT") and len(candidate) > 4:
+            actual = candidate
+            base = candidate[:-4]
+        else:
+            base = candidate
+            actual = f"{candidate}USDT"
+        actuals.append(actual)
+        symbol_to_base[actual] = base
+        base_to_actual.setdefault(base, []).append(actual)
+    actuals.sort()
+    return actuals, symbol_to_base, base_to_actual
+
+
 def _log_source_registry(config: AppConfig) -> None:
     for source_id, source in sorted(config.sources.items()):
         logging.info(
@@ -403,10 +497,14 @@ class AdapterSupervisor:
         self.spot: BinanceSpotWSAdapter | None = None
         self.perp: BinancePerpWSAdapter | None = None
         self.coinbase: CoinbaseSpotWSAdapter | None = None
+        self.bybit_spot: BybitSpotWSAdapter | None = None
+        self.bybit_perp: BybitPerpWSAdapter | None = None
 
     def start(
         self,
         *,
+        binance_spot_enabled: bool,
+        binance_perp_enabled: bool,
         spot_symbols: list[str],
         spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
@@ -415,10 +513,16 @@ class AdapterSupervisor:
         perp_symbols: list[str],
         perp_symbol_to_base: dict[str, str],
         coinbase_symbols: list[str],
+        bybit_spot_symbols: list[str],
+        bybit_spot_symbol_to_base: dict[str, str],
+        bybit_perp_symbols: list[str],
+        bybit_perp_symbol_to_base: dict[str, str],
     ) -> None:
         self._thread.start()
         self._ready.wait(timeout=5)
         self.update_symbols(
+            binance_spot_enabled=binance_spot_enabled,
+            binance_perp_enabled=binance_perp_enabled,
             spot_symbols=spot_symbols,
             spot_symbol_to_base=spot_symbol_to_base,
             spot_quotes=spot_quotes,
@@ -427,11 +531,17 @@ class AdapterSupervisor:
             perp_symbols=perp_symbols,
             perp_symbol_to_base=perp_symbol_to_base,
             coinbase_symbols=coinbase_symbols,
+            bybit_spot_symbols=bybit_spot_symbols,
+            bybit_spot_symbol_to_base=bybit_spot_symbol_to_base,
+            bybit_perp_symbols=bybit_perp_symbols,
+            bybit_perp_symbol_to_base=bybit_perp_symbol_to_base,
         )
 
     def update_symbols(
         self,
         *,
+        binance_spot_enabled: bool,
+        binance_perp_enabled: bool,
         spot_symbols: list[str],
         spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
@@ -440,11 +550,17 @@ class AdapterSupervisor:
         perp_symbols: list[str],
         perp_symbol_to_base: dict[str, str],
         coinbase_symbols: list[str],
+        bybit_spot_symbols: list[str],
+        bybit_spot_symbol_to_base: dict[str, str],
+        bybit_perp_symbols: list[str],
+        bybit_perp_symbol_to_base: dict[str, str],
     ) -> None:
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(
             self._restart(
+                binance_spot_enabled=binance_spot_enabled,
+                binance_perp_enabled=binance_perp_enabled,
                 spot_symbols=spot_symbols,
                 spot_symbol_to_base=spot_symbol_to_base,
                 spot_quotes=spot_quotes,
@@ -453,6 +569,10 @@ class AdapterSupervisor:
                 perp_symbols=perp_symbols,
                 perp_symbol_to_base=perp_symbol_to_base,
                 coinbase_symbols=coinbase_symbols,
+                bybit_spot_symbols=bybit_spot_symbols,
+                bybit_spot_symbol_to_base=bybit_spot_symbol_to_base,
+                bybit_perp_symbols=bybit_perp_symbols,
+                bybit_perp_symbol_to_base=bybit_perp_symbol_to_base,
             ),
             self._loop,
         )
@@ -466,6 +586,8 @@ class AdapterSupervisor:
     async def _restart(
         self,
         *,
+        binance_spot_enabled: bool,
+        binance_perp_enabled: bool,
         spot_symbols: list[str],
         spot_symbol_to_base: dict[str, str],
         spot_quotes: dict[str, str],
@@ -474,30 +596,65 @@ class AdapterSupervisor:
         perp_symbols: list[str],
         perp_symbol_to_base: dict[str, str],
         coinbase_symbols: list[str],
+        bybit_spot_symbols: list[str],
+        bybit_spot_symbol_to_base: dict[str, str],
+        bybit_perp_symbols: list[str],
+        bybit_perp_symbol_to_base: dict[str, str],
     ) -> None:
         await self._cancel_tasks()
-        spot = BinanceSpotWSAdapter(
-            symbols=spot_symbols,
-            symbol_to_base=spot_symbol_to_base,
-            symbol_quotes=spot_quotes,
-            quote_pairs=quote_pairs,
-            quote_rates=quote_rates,
+        spot = (
+            BinanceSpotWSAdapter(
+                symbols=spot_symbols,
+                symbol_to_base=spot_symbol_to_base,
+                symbol_quotes=spot_quotes,
+                quote_pairs=quote_pairs,
+                quote_rates=quote_rates,
+            )
+            if binance_spot_enabled
+            else None
         )
-        perp = BinancePerpWSAdapter(
-            symbols=perp_symbols,
-            symbol_to_base=perp_symbol_to_base,
+        perp = (
+            BinancePerpWSAdapter(
+                symbols=perp_symbols,
+                symbol_to_base=perp_symbol_to_base,
+            )
+            if binance_perp_enabled
+            else None
         )
         coinbase = CoinbaseSpotWSAdapter(symbols=coinbase_symbols) if coinbase_symbols else None
+        bybit_spot = (
+            BybitSpotWSAdapter(
+                symbols=bybit_spot_symbols,
+                symbol_to_base=bybit_spot_symbol_to_base,
+            )
+            if bybit_spot_symbols
+            else None
+        )
+        bybit_perp = (
+            BybitPerpWSAdapter(
+                symbols=bybit_perp_symbols,
+                symbol_to_base=bybit_perp_symbol_to_base,
+            )
+            if bybit_perp_symbols
+            else None
+        )
         with self._lock:
             self.spot = spot
             self.perp = perp
             self.coinbase = coinbase
-        self._tasks = [
-            asyncio.create_task(self._consume(spot)),
-            asyncio.create_task(self._consume(perp)),
-        ]
+            self.bybit_spot = bybit_spot
+            self.bybit_perp = bybit_perp
+        self._tasks = []
+        if spot is not None:
+            self._tasks.append(asyncio.create_task(self._consume(spot)))
+        if perp is not None:
+            self._tasks.append(asyncio.create_task(self._consume(perp)))
         if coinbase is not None:
             self._tasks.append(asyncio.create_task(self._consume(coinbase)))
+        if bybit_spot is not None:
+            self._tasks.append(asyncio.create_task(self._consume(bybit_spot)))
+        if bybit_perp is not None:
+            self._tasks.append(asyncio.create_task(self._consume(bybit_perp)))
 
     async def _cancel_tasks(self) -> None:
         if not self._tasks:
@@ -526,6 +683,8 @@ def _init_runtime(
     selector_recovery_confirm_cycles: int,
     selector_switch_cooldown_cycles: int,
     coinbase_base_to_actual: dict[str, list[str]],
+    bybit_spot_base_to_actual: dict[str, list[str]],
+    bybit_perp_base_to_actual: dict[str, list[str]],
 ) -> RuntimeState:
     loops: dict[str, EngineLoop] = {}
     last_state: dict[str, StateSnapshot | None] = {}
@@ -557,6 +716,8 @@ def _init_runtime(
         source_allowlists=source_allowlists,
         filter_reset_events=[],
         coinbase_base_to_actual=coinbase_base_to_actual,
+        bybit_spot_base_to_actual=bybit_spot_base_to_actual,
+        bybit_perp_base_to_actual=bybit_perp_base_to_actual,
     )
 
 
@@ -1111,6 +1272,22 @@ def _report_missing(
             supervisor.coinbase,
             coinbase_actual_to_base,
         )
+    if supervisor.bybit_spot is not None:
+        bybit_spot_actual_to_base = _invert_base_to_actual(runtime.bybit_spot_base_to_actual)
+        _log_missing_adapter(
+            prefix,
+            "bybit_spot",
+            supervisor.bybit_spot,
+            bybit_spot_actual_to_base,
+        )
+    if supervisor.bybit_perp is not None:
+        bybit_perp_actual_to_base = _invert_base_to_actual(runtime.bybit_perp_base_to_actual)
+        _log_missing_adapter(
+            prefix,
+            "bybit_perp",
+            supervisor.bybit_perp,
+            bybit_perp_actual_to_base,
+        )
 
 
 def _invert_base_to_actual(mapping: dict[str, list[str]]) -> dict[str, str]:
@@ -1168,6 +1345,8 @@ def _build_tbt_settings(
         spot_actuals = runtime.symbol_maps.spot_base_to_actual.get(symbol, [])
         perp_actuals = runtime.symbol_maps.perp_base_to_actual.get(symbol, [])
         coinbase_actuals = runtime.coinbase_base_to_actual.get(symbol, [])
+        bybit_spot_actuals = runtime.bybit_spot_base_to_actual.get(symbol, [])
+        bybit_perp_actuals = runtime.bybit_perp_base_to_actual.get(symbol, [])
         tbt_values: list[float] = []
         if supervisor.spot is not None:
             spot_tbt = supervisor.spot.tbt_min(spot_actuals)
@@ -1181,6 +1360,14 @@ def _build_tbt_settings(
             coinbase_tbt = supervisor.coinbase.tbt_min(coinbase_actuals)
             if coinbase_tbt is not None:
                 tbt_values.append(coinbase_tbt)
+        if supervisor.bybit_spot is not None and bybit_spot_actuals:
+            bybit_spot_tbt = supervisor.bybit_spot.tbt_min(bybit_spot_actuals)
+            if bybit_spot_tbt is not None:
+                tbt_values.append(bybit_spot_tbt)
+        if supervisor.bybit_perp is not None and bybit_perp_actuals:
+            bybit_perp_tbt = supervisor.bybit_perp.tbt_min(bybit_perp_actuals)
+            if bybit_perp_tbt is not None:
+                tbt_values.append(bybit_perp_tbt)
         if tbt_values:
             min_tbt = min(tbt_values)
             cutoffs[symbol] = max(1, int(min_tbt))

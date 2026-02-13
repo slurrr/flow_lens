@@ -826,10 +826,20 @@ def _draw_ellipse_ring(
 ) -> None:
     if radius_x <= 0 or radius_y <= 0:
         return
+    if center_x < 0 or center_x >= canvas.width_px:
+        return
+    if center_y < 0 or center_y >= canvas.height_px:
+        return
     inner = band_inner
     outer = band_outer
-    for dy in range(-radius_y - 1, radius_y + 2):
-        for dx in range(-radius_x - 1, radius_x + 2):
+    min_dx = max(-radius_x - 1, -center_x)
+    max_dx = min(radius_x + 1, canvas.width_px - 1 - center_x)
+    min_dy = max(-radius_y - 1, -center_y)
+    max_dy = min(radius_y + 1, canvas.height_px - 1 - center_y)
+    if min_dx > max_dx or min_dy > max_dy:
+        return
+    for dy in range(min_dy, max_dy + 1):
+        for dx in range(min_dx, max_dx + 1):
             nx = dx / radius_x
             ny = dy / radius_y
             dist = nx * nx + ny * ny

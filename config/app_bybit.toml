@@ -1,68 +1,3 @@
-[adapters.binance_spot]
-type = "binance_spot_ws"
-symbols = [
-  "ASTER",
-  "ZEC",
-  "NEAR",
-  "FIL",
-  "XPL",
-  "AAVE",
-  "USELESS",
-  "SOL",
-  "PUMP",
-  "LINEA",
-  "EIGEN",
-  "ONDO",
-  "LINK",
-  "OP",
-  "LTC",
-  "PEPE",
-  "FLOKI",
-  "DOGE",
-  "SHIB",
-  "AVAX",
-  "BNB",
-  "BTC",
-  "ETH",
-  "HYPE",
-]
-
-[adapters.binance_perp]
-type = "binance_perp_ws"
-symbols = [
-  "ASTER",
-  "ZEC",
-  "NEAR",
-  "FIL",
-  "XPL",
-  "AAVE",
-  "USELESS",
-  "SOL",
-  "PUMP",
-  "LINEA",
-  "EIGEN",
-  "ONDO",
-  "LINK",
-  "OP",
-  "LTC",
-  "PEPE",
-  "FLOKI",
-  "DOGE",
-  "SHIB",
-  "AVAX",
-  "BNB",
-  "BTC",
-  "ETH",
-  "HYPE",
-]
-
-[adapters.coinbase_spot]
-type = "coinbase_spot_ws"
-symbols = [
-  "BTC",
-  "SOL",
-]
-
 [adapters.bybit_spot]
 type = "bybit_spot_ws"
 symbols = [
@@ -76,39 +11,6 @@ symbols = [
   "BTC",
   "SOL",
 ]
-
-[sources.binance_spot]
-venue = "binance"
-instrument_class = "spot"
-market_type_for_x = "spot"
-price_eligible = true
-price_priority = 90
-has_size = true
-has_aggressor = true
-aggressor_mode = "native"
-quote_mode = "converted"
-
-[sources.binance_perp]
-venue = "binance"
-instrument_class = "perp"
-market_type_for_x = "perp"
-price_eligible = true
-price_priority = 10
-has_size = true
-has_aggressor = true
-aggressor_mode = "native"
-quote_mode = "usd_like"
-
-[sources.coinbase_spot]
-venue = "coinbase"
-instrument_class = "spot"
-market_type_for_x = "spot"
-price_eligible = true
-price_priority = 100
-has_size = true
-has_aggressor = true
-aggressor_mode = "native"
-quote_mode = "usd_like"
 
 [sources.bybit_spot]
 venue = "bybit"
