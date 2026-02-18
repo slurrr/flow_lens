@@ -928,6 +928,15 @@ async def _hyperliquid_sdk_run(
     loop = asyncio.get_running_loop()
     dedupe = _DedupeState(max_size=200_000)
     conn_id = 1
+    dropped_queue = 0
+
+    def _enqueue(trades: list[TradePrint]) -> None:
+        nonlocal dropped_queue
+        for tp in trades:
+            try:
+                out_queue.put_nowait(tp)
+            except asyncio.QueueFull:
+                dropped_queue += 1
 
     def on_msg(ws_msg: Any) -> None:
         recv_ms = _now_ms()
@@ -941,6 +950,7 @@ async def _hyperliquid_sdk_run(
         min_ts_venue_ms: int | None = None
         max_ts_venue_ms: int | None = None
         emitted = 0
+        batch: list[TradePrint] = []
 
         for row in data:
             if not isinstance(row, dict):
@@ -968,8 +978,11 @@ async def _hyperliquid_sdk_run(
             if tp is None:
                 continue
             emitted += 1
+            batch.append(tp)
+
+        if batch:
             try:
-                loop.call_soon_threadsafe(out_queue.put_nowait, tp)
+                loop.call_soon_threadsafe(_enqueue, batch)
             except RuntimeError:
                 # Event loop closed.
                 return
@@ -987,6 +1000,7 @@ async def _hyperliquid_sdk_run(
                 "max_ts_venue_ms": max_ts_venue_ms,
                 "recv_minus_max_venue_ms": (recv_ms - max_ts_venue_ms) if max_ts_venue_ms is not None else None,
                 "emitted_trades": emitted,
+                "dropped_queue": dropped_queue,
             }
 
             async def _write() -> None:

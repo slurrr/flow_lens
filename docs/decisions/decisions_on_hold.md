@@ -19,6 +19,7 @@
 - dropped feeds
 - stale data
 - adapter disconnect behavior
+- reconnect-aware hygiene gating (explicit adapter lifecycle events): `docs/decisions/FL-0068-adapter-lifecycle-events-for-hygiene.md`
 
 ---
 

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import AsyncIterator
 
 import websockets
 
 from flow_lens.adapters.base import AdapterEvent, BaseAdapter
+from flow_lens.adapters.time_utils import normalize_venue_timestamp_ms
 from flow_lens.models.event import Event
 from flow_lens.symbols import USD_QUOTES, QuotePair
 
@@ -61,7 +63,11 @@ class BinanceSpotWSAdapter(BaseAdapter):
                     symbol_upper = symbol.upper()
                     price = float(data["p"])
                     quantity = float(data["q"])
-                    timestamp = int(data["T"])
+                    ts_recv_ms = self._clamp_recv_timestamp_ms(
+                        symbol_upper,
+                        int(time.time_ns() // 1_000_000),
+                    )
+                    venue_ts_ms = normalize_venue_timestamp_ms(data.get("T"))
                     aggressor_side = "sell" if data.get("m") else "buy"
                     quote_asset = self._quote_pair_by_symbol.get(symbol_upper)
                     if quote_asset is not None:
@@ -82,14 +88,16 @@ class BinanceSpotWSAdapter(BaseAdapter):
                     price_usdt = price * rate
                     effort_value = price_usdt * quantity
                     event = Event(
-                        timestamp=timestamp,
+                        timestamp=ts_recv_ms,
                         source_id="binance_spot",
                         side_type="spot",
                         aggressor_side=aggressor_side,
                         effort_value=effort_value,
                         price=price_usdt,
+                        venue_timestamp_ms=venue_ts_ms,
+                        trade_id=str(data.get("a")) if data.get("a") is not None else None,
                     )
-                    self._mark_event(symbol, timestamp)
+                    self._mark_event(symbol_upper, ts_recv_ms)
                     self._mark_message(dropped=False)
                     yield AdapterEvent(
                         symbol=symbol,

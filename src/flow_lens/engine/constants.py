@@ -96,6 +96,25 @@ class Binning:
 
 
 @dataclass(frozen=True)
+class ControlBaseline:
+    enabled: bool = True
+    target_window_s: float = 1800.0
+    target_update_s: float = 10.0
+    breakout_band: float = 0.06
+    confirm_s: float = 30.0
+    exit_band_frac: float = 0.50
+    peg_half_life_s: float = 7200.0
+    reanchor_half_life_s: float = 180.0
+    peg_deadband: float = 0.015
+    max_window_samples: int | None = None
+    center_suppress_band: float = 0.02
+    line_hide_warmup_s: float = 120.0
+    midnight_tick_enabled: bool = True
+    midnight_tick_min_samples: int = 60
+    midnight_tick_min_elapsed_s: float = 600.0
+
+
+@dataclass(frozen=True)
 class Defaults:
     time_domain: TimeDomain = TimeDomain()
     effort_floor: EffortFloor = EffortFloor()
@@ -110,3 +129,4 @@ class Defaults:
     size_scale: SizeScaleConfig = SizeScaleConfig()
     halo_dynamics: HaloDynamics = HaloDynamics()
     binning: Binning = Binning()
+    control_baseline: ControlBaseline = ControlBaseline()

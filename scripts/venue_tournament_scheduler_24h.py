@@ -225,6 +225,27 @@ def main() -> int:
     parser.add_argument("--slice-minutes", type=int, default=60, help="Slice size minutes for per-block analysis (default: 60).")
     parser.add_argument("--slice-step-minutes", type=int, default=30, help="Slice step minutes for per-block analysis (default: 30).")
     parser.add_argument(
+        "--analysis-drop-stale",
+        action="store_true",
+        help=(
+            "Enable stale-on-arrival filtering during analysis (recommended). "
+            "Drops trades where wire_lag_ms=(ts_recv_ms - ts_venue_ms|ts_exchange_ms) exceeds --analysis-max-wire-lag-ms."
+        ),
+    )
+    parser.add_argument(
+        "--no-analysis-drop-stale",
+        action="store_false",
+        dest="analysis_drop_stale",
+        help="Disable stale-on-arrival filtering during analysis.",
+    )
+    parser.set_defaults(analysis_drop_stale=True)
+    parser.add_argument(
+        "--analysis-max-wire-lag-ms",
+        type=int,
+        default=5000,
+        help="Max wire lag in ms for stale-on-arrival filtering (default: 5000).",
+    )
+    parser.add_argument(
         "--write-run-summary",
         action="store_true",
         help="Write run summary files at end of analysis phase (default: enabled; use --no-write-run-summary to disable).",
@@ -357,38 +378,40 @@ def main() -> int:
             for timebase in ("exchange", "recv", "exchange_local"):
                 # All-up report
                 out_all = diag_root / f"{block.label}_tb_{timebase}_all.txt"
-                _run_cmd(
-                    [
+                argv = [
+                    python,
+                    tournament_script,
+                    "--input",
+                    str(capture_path),
+                    "--timebase",
+                    timebase,
+                    "--out",
+                    str(out_all),
+                ]
+                if bool(args.analysis_drop_stale):
+                    argv.extend(["--drop-stale", "--max-wire-lag-ms", str(int(args.analysis_max_wire_lag_ms))])
+                _run_cmd(argv)
+
+                # Slices: 60m slices with 30m step (default)
+                for idx, (s0, s1) in enumerate(slices, start=1):
+                    out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
+                    argv = [
                         python,
                         tournament_script,
                         "--input",
                         str(capture_path),
                         "--timebase",
                         timebase,
+                        "--start-ms",
+                        str(_epoch_ms(s0)),
+                        "--end-ms",
+                        str(_epoch_ms(s1)),
                         "--out",
-                        str(out_all),
+                        str(out_slice),
                     ]
-                )
-
-                # Slices: 60m slices with 30m step (default)
-                for idx, (s0, s1) in enumerate(slices, start=1):
-                    out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
-                    _run_cmd(
-                        [
-                            python,
-                            tournament_script,
-                            "--input",
-                            str(capture_path),
-                            "--timebase",
-                            timebase,
-                            "--start-ms",
-                            str(_epoch_ms(s0)),
-                            "--end-ms",
-                            str(_epoch_ms(s1)),
-                            "--out",
-                            str(out_slice),
-                        ]
-                    )
+                    if bool(args.analysis_drop_stale):
+                        argv.extend(["--drop-stale", "--max-wire-lag-ms", str(int(args.analysis_max_wire_lag_ms))])
+                    _run_cmd(argv)
 
             print(f"reports done: {block.label} outputs={diag_root}")
 
@@ -411,36 +434,38 @@ def main() -> int:
 
             for timebase in ("exchange", "recv", "exchange_local"):
                 out_all = diag_root / f"{block.label}_tb_{timebase}_all.txt"
-                _run_cmd(
-                    [
+                argv = [
+                    python,
+                    tournament_script,
+                    "--input",
+                    str(capture_path),
+                    "--timebase",
+                    timebase,
+                    "--out",
+                    str(out_all),
+                ]
+                if bool(args.analysis_drop_stale):
+                    argv.extend(["--drop-stale", "--max-wire-lag-ms", str(int(args.analysis_max_wire_lag_ms))])
+                _run_cmd(argv)
+                for idx, (s0, s1) in enumerate(slices, start=1):
+                    out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
+                    argv = [
                         python,
                         tournament_script,
                         "--input",
                         str(capture_path),
                         "--timebase",
                         timebase,
+                        "--start-ms",
+                        str(_epoch_ms(s0)),
+                        "--end-ms",
+                        str(_epoch_ms(s1)),
                         "--out",
-                        str(out_all),
+                        str(out_slice),
                     ]
-                )
-                for idx, (s0, s1) in enumerate(slices, start=1):
-                    out_slice = diag_root / f"{block.label}_tb_{timebase}_slice_{idx:02d}.txt"
-                    _run_cmd(
-                        [
-                            python,
-                            tournament_script,
-                            "--input",
-                            str(capture_path),
-                            "--timebase",
-                            timebase,
-                            "--start-ms",
-                            str(_epoch_ms(s0)),
-                            "--end-ms",
-                            str(_epoch_ms(s1)),
-                            "--out",
-                            str(out_slice),
-                        ]
-                    )
+                    if bool(args.analysis_drop_stale):
+                        argv.extend(["--drop-stale", "--max-wire-lag-ms", str(int(args.analysis_max_wire_lag_ms))])
+                    _run_cmd(argv)
             print(f"reports done (deferred): {block.label}")
 
         print(f"analysis done (deferred): outputs={diag_root}")

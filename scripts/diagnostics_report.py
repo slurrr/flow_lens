@@ -147,6 +147,28 @@ def _event_counts_by_symbol(events: Iterable[dict]) -> dict[str, Counter[str]]:
     return counts
 
 
+def _hygiene_rearm_totals_by_symbol(events: Iterable[dict]) -> dict[str, dict[str, int]]:
+    totals: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "connect_gate_rearm_inactivity": 0,
+            "connect_gate_rearm_stale_burst": 0,
+        }
+    )
+    for event in events:
+        symbol = str(event.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        if str(event.get("event_type", "")) != "hygiene_metrics":
+            continue
+        inactivity = event.get("connect_gate_rearm_inactivity", 0)
+        stale_burst = event.get("connect_gate_rearm_stale_burst", 0)
+        if isinstance(inactivity, (int, float)):
+            totals[symbol]["connect_gate_rearm_inactivity"] += int(inactivity)
+        if isinstance(stale_burst, (int, float)):
+            totals[symbol]["connect_gate_rearm_stale_burst"] += int(stale_burst)
+    return totals
+
+
 def _load_config_from_log(path: Path) -> dict[str, object]:
     if path.suffix == ".gz":
         handle = gzip.open(path, "rt", encoding="utf-8")
@@ -207,15 +229,15 @@ def _load_config_summary(path: Path) -> dict[str, object]:
     except OSError:
         return {}
     runtime: dict[str, object] = {}
-    in_runtime = False
+    current_section = ""
     for raw_line in data.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("[") and line.endswith("]"):
-            in_runtime = line == "[runtime]"
+            current_section = line[1:-1].strip()
             continue
-        if not in_runtime:
+        if current_section not in {"runtime", "runtime.hygiene"}:
             continue
         if "=" not in line:
             continue
@@ -258,6 +280,35 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "effort_scale_percentile",
         "effort_scale_min_samples",
         "size_scale_percentile",
+        "control_baseline_enabled",
+        "control_baseline_target_window_s",
+        "control_baseline_target_update_s",
+        "control_baseline_breakout_band",
+        "control_baseline_confirm_s",
+        "control_baseline_exit_band_frac",
+        "control_baseline_peg_half_life_s",
+        "control_baseline_reanchor_half_life_s",
+        "control_baseline_peg_deadband",
+        "control_baseline_max_window_samples",
+        "control_baseline_center_suppress_band",
+        "control_baseline_line_hide_warmup_s",
+        "control_baseline_midnight_tick_enabled",
+        "control_baseline_midnight_tick_min_samples",
+        "control_baseline_midnight_tick_min_elapsed_s",
+        "hygiene_enabled",
+        "hygiene_max_excess_wire_lag_ms",
+        "hygiene_hard_max_wire_lag_ms",
+        "hygiene_wire_lag_baseline_window_s",
+        "hygiene_wire_lag_baseline_sample_interval_ms",
+        "hygiene_wire_lag_baseline_min_samples",
+        "hygiene_wire_lag_baseline_max_samples",
+        "hygiene_dedupe_ttl_s",
+        "hygiene_log_interval_s",
+        "hygiene_future_venue_ts_grace_ms",
+        "hygiene_connect_gate_s",
+        "hygiene_connect_gate_max_excess_wire_lag_ms",
+        "hygiene_connect_gate_hard_max_wire_lag_ms",
+        "hygiene_connect_gate_rearm_after_s",
         "effort_floor_multiplier",
         "effort_floor_ticks",
         "smoothing_dominance_alpha",
@@ -606,6 +657,7 @@ def _stats_for_symbol(
     *,
     config: dict[str, object] | None = None,
     event_counts: dict[str, Counter[str]] | None = None,
+    hygiene_rearm_totals: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, object]:
     records.sort(key=lambda record: int(record.get("now_ms", 0)))
     out: dict[str, object] = {}
@@ -648,6 +700,11 @@ def _stats_for_symbol(
     persist_step_coeff_stats = SeriesStats([])
     x_raw_stats = SeriesStats([])
     x_stats = SeriesStats([])
+    control_baseline_x_stats = SeriesStats([])
+    control_baseline_target_x_stats = SeriesStats([])
+    control_baseline_delta_stats = SeriesStats([])
+    control_baseline_breakout_age_s_stats = SeriesStats([])
+    control_baseline_midnight_tick_x_stats = SeriesStats([])
     size_raw_stats = SeriesStats([])
     size_effort_norm_stats = SeriesStats([])
     size_scale_stats = SeriesStats([])
@@ -677,6 +734,7 @@ def _stats_for_symbol(
     size_bins: Counter[int] = Counter()
     persist_input_counts: Counter[str] = Counter()
     persist_update_mode_counts: Counter[str] = Counter()
+    control_baseline_mode_counts: Counter[str] = Counter()
 
     spot_fresh = 0
     perp_fresh = 0
@@ -693,6 +751,10 @@ def _stats_for_symbol(
     y_raw_disp_dir_mismatch_total = 0
 
     persist_activity_true = 0
+    control_baseline_initialized_true = 0
+    control_baseline_visible_true = 0
+    control_baseline_midnight_tick_visible_true = 0
+    control_baseline_midnight_tick_locked_true = 0
 
     stale_hold_run_s = 0.0
     stale_hold_runs_s: list[float] = []
@@ -893,6 +955,29 @@ def _stats_for_symbol(
         prev_persist_s = persist_s_value
         x_raw_stats.add(float(record.get("X_raw", 0.0)))
         x_stats.add(float(record.get("X", 0.0)))
+        control_baseline_x_stats.add(float(record.get("control_baseline_x", 0.0)))
+        control_baseline_target_x_stats.add(
+            float(record.get("control_baseline_target_x", 0.0))
+        )
+        control_baseline_delta_stats.add(float(record.get("control_baseline_delta", 0.0)))
+        control_baseline_breakout_age_s_stats.add(
+            float(record.get("control_baseline_breakout_age_s", 0.0))
+        )
+        tick_x_raw = record.get("control_baseline_midnight_tick_x")
+        if isinstance(tick_x_raw, (int, float)):
+            control_baseline_midnight_tick_x_stats.add(float(tick_x_raw))
+        control_baseline_mode = (
+            str(record.get("control_baseline_mode", "unknown")).strip() or "unknown"
+        )
+        control_baseline_mode_counts[control_baseline_mode] += 1
+        if bool(record.get("control_baseline_initialized", False)):
+            control_baseline_initialized_true += 1
+        if bool(record.get("control_baseline_visible", False)):
+            control_baseline_visible_true += 1
+        if bool(record.get("control_baseline_midnight_tick_visible", False)):
+            control_baseline_midnight_tick_visible_true += 1
+        if bool(record.get("control_baseline_midnight_tick_locked", False)):
+            control_baseline_midnight_tick_locked_true += 1
         size_raw_stats.add(float(record.get("size_raw", 0.0)))
         size_effort_norm_stats.add(float(record.get("size_effort_norm", 0.0)))
         size_scale_stats.add(float(record.get("size_scale", 0.0)))
@@ -1093,10 +1178,12 @@ def _stats_for_symbol(
     out["duration_min"] = total_duration_s / 60.0 if total_duration_s > 0 else 0.0
     symbol = str(records[0].get("symbol", "")).upper() if records else ""
     unavailable_count = 0
+    hygiene_metrics_count = 0
     if event_counts is not None and symbol:
         unavailable_count = event_counts.get(symbol, Counter()).get(
             "price_series_unavailable", 0
         )
+        hygiene_metrics_count = event_counts.get(symbol, Counter()).get("hygiene_metrics", 0)
     duration_min = out["duration_min"]
     duration_min_value = float(duration_min) if isinstance(duration_min, (int, float)) else 0.0
     out["price_series_unavailable_count"] = unavailable_count
@@ -1106,9 +1193,32 @@ def _stats_for_symbol(
     out["price_series_unavailable_per_min"] = (
         unavailable_count / duration_min_value if duration_min_value > 0 else 0.0
     )
+    out["hygiene_metrics_count"] = hygiene_metrics_count
+    rearm_inactivity = 0
+    rearm_stale_burst = 0
+    if hygiene_rearm_totals is not None and symbol:
+        rearm_inactivity = hygiene_rearm_totals.get(symbol, {}).get(
+            "connect_gate_rearm_inactivity", 0
+        )
+        rearm_stale_burst = hygiene_rearm_totals.get(symbol, {}).get(
+            "connect_gate_rearm_stale_burst", 0
+        )
+    out["connect_gate_rearm_inactivity_count"] = rearm_inactivity
+    out["connect_gate_rearm_stale_burst_count"] = rearm_stale_burst
 
     out["persist_input_counts"] = dict(persist_input_counts)
     out["persist_update_mode_counts"] = dict(persist_update_mode_counts)
+    out["control_baseline_mode_counts"] = dict(control_baseline_mode_counts)
+    out["control_baseline_initialized_rate"] = _ratio(
+        control_baseline_initialized_true, len(records)
+    )
+    out["control_baseline_visible_rate"] = _ratio(control_baseline_visible_true, len(records))
+    out["control_baseline_midnight_tick_visible_rate"] = _ratio(
+        control_baseline_midnight_tick_visible_true, len(records)
+    )
+    out["control_baseline_midnight_tick_locked_rate"] = _ratio(
+        control_baseline_midnight_tick_locked_true, len(records)
+    )
     out["persist_activity_rate"] = _ratio(persist_activity_true, len(records))
     persist_dt_sorted = sorted(persist_dt_s_stats.values)
     out["persist_dt_p50_s"] = _percentile(persist_dt_sorted, 0.50) if persist_dt_sorted else 0.0
@@ -1284,6 +1394,21 @@ def _stats_for_symbol(
     )
     out["X_raw"] = _format_summary("X_raw", x_raw_stats.summary())
     out["X"] = _format_summary("X", x_stats.summary())
+    out["control_baseline_x"] = _format_summary(
+        "control_baseline_x", control_baseline_x_stats.summary()
+    )
+    out["control_baseline_target_x"] = _format_summary(
+        "control_baseline_target_x", control_baseline_target_x_stats.summary()
+    )
+    out["control_baseline_delta"] = _format_summary(
+        "control_baseline_delta", control_baseline_delta_stats.summary()
+    )
+    out["control_baseline_breakout_age_s"] = _format_summary(
+        "control_baseline_breakout_age_s", control_baseline_breakout_age_s_stats.summary()
+    )
+    out["control_baseline_midnight_tick_x"] = _format_summary(
+        "control_baseline_midnight_tick_x", control_baseline_midnight_tick_x_stats.summary()
+    )
     out["size_raw"] = _format_summary("size_raw", size_raw_stats.summary())
     out["size_effort_norm"] = _format_summary(
         "size_effort_norm", size_effort_norm_stats.summary()
@@ -1408,6 +1533,7 @@ def main() -> None:
     records, events = _load_records_and_events(path)
     grouped = _iter_symbols(records, symbols if symbols else None)
     event_counts = _event_counts_by_symbol(events)
+    hygiene_rearm_totals = _hygiene_rearm_totals_by_symbol(events)
 
     output_path = Path(args.out) if args.out else _output_path(symbols)
     config_path = Path(args.config)
@@ -1424,7 +1550,12 @@ def main() -> None:
 
     per_symbol_stats: dict[str, dict[str, object]] = {}
     for symbol, entries in sorted(grouped.items()):
-        stats = _stats_for_symbol(entries, config=config_values, event_counts=event_counts)
+        stats = _stats_for_symbol(
+            entries,
+            config=config_values,
+            event_counts=event_counts,
+            hygiene_rearm_totals=hygiene_rearm_totals,
+        )
         per_symbol_stats[symbol] = stats
         if symbol in majors:
             k_07_value = stats.get("k_reco_target_0.7", 0.0)
@@ -1470,6 +1601,12 @@ def main() -> None:
                 "price_series_unavailable: "
                 f"{stats['price_series_unavailable_count']} "
                 f"(per_min={stats['price_series_unavailable_per_min']:.2f})\n"
+            )
+            handle.write(f"hygiene_metrics_count: {stats['hygiene_metrics_count']}\n")
+            handle.write(
+                "connect_gate_rearm_counts: "
+                f"inactivity={stats['connect_gate_rearm_inactivity_count']} "
+                f"stale_burst={stats['connect_gate_rearm_stale_burst_count']}\n"
             )
             handle.write(
                 f"spot_fresh_rate: {stats['spot_fresh_rate']:.2f} "
@@ -1549,6 +1686,26 @@ def main() -> None:
             handle.write(f"persist_input_counts: {stats['persist_input_counts']}\n")
             handle.write(f"persist_update_mode_counts: {stats['persist_update_mode_counts']}\n")
             handle.write(
+                "control_baseline_mode_counts: "
+                f"{stats['control_baseline_mode_counts']}\n"
+            )
+            handle.write(
+                "control_baseline_initialized_rate: "
+                f"{stats['control_baseline_initialized_rate']:.2f}\n"
+            )
+            handle.write(
+                "control_baseline_visible_rate: "
+                f"{stats['control_baseline_visible_rate']:.2f}\n"
+            )
+            handle.write(
+                "control_baseline_midnight_tick_visible_rate: "
+                f"{stats['control_baseline_midnight_tick_visible_rate']:.2f}\n"
+            )
+            handle.write(
+                "control_baseline_midnight_tick_locked_rate: "
+                f"{stats['control_baseline_midnight_tick_locked_rate']:.2f}\n"
+            )
+            handle.write(
                 "persist_update_mode_fractions: "
                 f"{stats['persist_update_mode_fractions']}\n"
             )
@@ -1612,6 +1769,11 @@ def main() -> None:
                 "persist_step_coeff",
                 "X_raw",
                 "X",
+                "control_baseline_x",
+                "control_baseline_target_x",
+                "control_baseline_delta",
+                "control_baseline_breakout_age_s",
+                "control_baseline_midnight_tick_x",
                 "size_raw",
                 "size_effort_norm",
                 "size_scale",

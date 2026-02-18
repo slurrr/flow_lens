@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import time
 from typing import AsyncIterator, cast
 
 import websockets
 
 from flow_lens.adapters.base import AdapterEvent, BaseAdapter
+from flow_lens.adapters.time_utils import normalize_venue_timestamp_ms
 from flow_lens.models.event import AggressorSide, Event
 
 LOGGER = logging.getLogger(__name__)
@@ -52,7 +53,11 @@ class CoinbaseSpotWSAdapter(BaseAdapter):
                         continue
                     price = float(payload["price"])
                     size = float(payload["size"])
-                    timestamp = _parse_time_ms(str(payload.get("time", "")))
+                    ts_recv_ms = self._clamp_recv_timestamp_ms(
+                        product_id,
+                        int(time.time_ns() // 1_000_000),
+                    )
+                    venue_ts_ms = normalize_venue_timestamp_ms(payload.get("time"))
                     side_value = str(payload.get("side", "")).lower()
                     if side_value not in {"buy", "sell"}:
                         self._mark_message(dropped=True)
@@ -60,14 +65,18 @@ class CoinbaseSpotWSAdapter(BaseAdapter):
                     aggressor_side = cast(AggressorSide, side_value)
                     effort_value = price * size
                     event = Event(
-                        timestamp=timestamp,
+                        timestamp=ts_recv_ms,
                         source_id="coinbase_spot",
                         side_type="spot",
                         aggressor_side=aggressor_side,
                         effort_value=effort_value,
                         price=price,
+                        venue_timestamp_ms=venue_ts_ms,
+                        trade_id=str(payload.get("trade_id"))
+                        if payload.get("trade_id") is not None
+                        else None,
                     )
-                    self._mark_event(product_id, timestamp)
+                    self._mark_event(product_id, ts_recv_ms)
                     self._mark_message(dropped=False)
                     yield AdapterEvent(
                         symbol=product_id,
@@ -86,11 +95,3 @@ def _normalize_product(symbol: str) -> str:
         base = candidate[:-3]
         return f"{base}-USD"
     return f"{candidate}-USD"
-
-
-def _parse_time_ms(value: str) -> int:
-    cleaned = value.replace("Z", "+00:00")
-    dt = datetime.fromisoformat(cleaned)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)

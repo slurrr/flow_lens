@@ -29,6 +29,7 @@ class RendererConfig:
     frame_inset_px: int = 1
     frame_band_inner: float = 0.995
     frame_band_outer: float = 1.005
+    control_baseline_center_suppress_band: float = 0.02
     axis_flash_duration_s: float = 0.25
     axis_flash_cooldown_s: float = 0.75
 
@@ -43,6 +44,10 @@ class Renderer:
         self._axis_flash_target: int = 0
         self._axis_flash_until: float = 0.0
         self._axis_flash_cooldown_until: float = 0.0
+        self._last_screen_size: tuple[int, int] | None = None
+        self._skip_ring_once: bool = False
+        self._ring_cache_key: tuple[int, int, float, float] | None = None
+        self._ring_cache_offsets: list[tuple[int, int]] = []
 
     def draw(
         self,
@@ -62,6 +67,10 @@ class Renderer:
         maxy, maxx = stdscr.getmaxyx()
         if maxx <= 1 or maxy <= 1:
             return
+        current_size = (maxy, maxx)
+        if self._last_screen_size is not None and self._last_screen_size != current_size:
+            self._skip_ring_once = True
+        self._last_screen_size = current_size
         if curses.has_colors():
             self._ensure_colors()
 
@@ -84,7 +93,14 @@ class Renderer:
         map_right = map_left + map_width - 1
         map_bottom = map_top + map_height - 1
 
-        self._draw_axes_overlay(stdscr, map_top, map_left, map_width, map_height)
+        self._draw_axes_overlay(
+            stdscr,
+            map_top,
+            map_left,
+            map_width,
+            map_height,
+            state,
+        )
         self._draw_lens(
             stdscr,
             state=state,
@@ -94,9 +110,18 @@ class Renderer:
             map_height=map_height,
             maxx=maxx,
             maxy=maxy,
+            skip_frame_ring=self._skip_ring_once,
         )
+        self._skip_ring_once = False
         # Re-apply solid axes so persistence/halo never erase axis continuity.
-        self._draw_axes_overlay(stdscr, map_top, map_left, map_width, map_height)
+        self._draw_axes_overlay(
+            stdscr,
+            map_top,
+            map_left,
+            map_width,
+            map_height,
+            state,
+        )
         if state is not None:
             # Dot is re-drawn last so it remains visible even when on the axes.
             self._draw_dot_overlay(
@@ -357,22 +382,47 @@ class Renderer:
         map_height: int,
         maxx: int,
         maxy: int,
+        skip_frame_ring: bool,
     ) -> None:
         canvas = _BrailleCanvas(map_width, map_height)
+        baseline_canvas: _BrailleCanvas | None = None
         persist_canvas: _BrailleCanvas | None = None
         persist_attr = 0
         center_x = canvas.width_px // 2
         center_y = canvas.height_px // 2
-        if self._config.frame_enabled:
-            _draw_ellipse_ring(
-                canvas,
-                center_x=center_x,
-                center_y=center_y,
-                radius_x=max(1, center_x - self._config.frame_inset_px),
-                radius_y=max(1, center_y - self._config.frame_inset_px),
-                band_inner=self._config.frame_band_inner,
-                band_outer=self._config.frame_band_outer,
+        if (
+            state is not None
+            and state.control_baseline_enabled
+            and state.control_baseline_initialized
+            and state.control_baseline_visible
+            and abs(state.control_baseline_x)
+            >= self._config.control_baseline_center_suppress_band
+        ):
+            baseline_x, _ = _norm_to_braille(
+                state.control_baseline_x, 0.0, map_width, map_height
             )
+            baseline_canvas = _BrailleCanvas(map_width, map_height)
+            baseline_canvas.draw_vline(baseline_x, step=2)
+
+        if self._config.frame_enabled and not skip_frame_ring:
+            radius_x = max(1, center_x - self._config.frame_inset_px)
+            radius_y = max(1, center_y - self._config.frame_inset_px)
+            cache_key = (
+                radius_x,
+                radius_y,
+                self._config.frame_band_inner,
+                self._config.frame_band_outer,
+            )
+            if self._ring_cache_key != cache_key:
+                self._ring_cache_key = cache_key
+                self._ring_cache_offsets = _ellipse_ring_offsets(
+                    radius_x=radius_x,
+                    radius_y=radius_y,
+                    band_inner=self._config.frame_band_inner,
+                    band_outer=self._config.frame_band_outer,
+                )
+            for dx, dy in self._ring_cache_offsets:
+                canvas.set_px(center_x + dx, center_y + dy)
 
         if state is not None:
             if state.persist_enabled:
@@ -398,6 +448,12 @@ class Renderer:
             _draw_halo(canvas, dot_x, dot_y, state.halo_bin, self._config.halo_radii)
             _draw_dot(canvas, dot_x, dot_y, state.size_bin, self._config.dot_radii)
 
+        if baseline_canvas is not None:
+            try:
+                baseline_canvas.blit(stdscr, map_top, map_left, maxx, maxy, attr=curses.A_DIM)
+            except (TypeError, curses.error):
+                # Protect the render loop from rare curses/frame-shape edge cases.
+                pass
         canvas.blit(stdscr, map_top, map_left, maxx, maxy)
         if persist_canvas is not None:
             persist_canvas.blit(stdscr, map_top, map_left, maxx, maxy, attr=persist_attr)
@@ -409,6 +465,7 @@ class Renderer:
         map_left: int,
         map_width: int,
         map_height: int,
+        state: StateSnapshot | None,
     ) -> None:
         center_x = map_left + map_width // 2
         center_y = map_top + map_height // 2
@@ -419,6 +476,18 @@ class Renderer:
         for y in range(map_top, map_top + map_height):
             ch = "┼" if y == center_y else "│"
             _safe_addstr(stdscr, y, center_x, ch)
+        if (
+            state is not None
+            and state.control_baseline_enabled
+            and state.control_baseline_midnight_tick_visible
+            and state.control_baseline_midnight_tick_x is not None
+        ):
+            tick_cell_x, _ = _norm_to_grid(
+                state.control_baseline_midnight_tick_x, 0.0, map_width, map_height
+            )
+            tick_x = map_left + tick_cell_x
+            if tick_x != center_x:
+                _safe_addstr(stdscr, center_y, tick_x, "┆", attr=curses.A_DIM)
 
     def _draw_dot_overlay(
         self,
@@ -555,6 +624,14 @@ def _status_lines(
         persist_now = None
         persist_slope = None
         gate_now = None
+        baseline_x = None
+        baseline_mode = None
+        baseline_delta = None
+        baseline_initialized = None
+        baseline_visible = None
+        midnight_tick_visible = None
+        midnight_tick_locked = None
+        midnight_tick_x = None
     else:
         y_raw_now = state.y_raw
         y_smoothed = state.y
@@ -562,6 +639,14 @@ def _status_lines(
         persist_now = state.persist_raw
         persist_slope = state.persist_slope
         gate_now = state.gate
+        baseline_x = state.control_baseline_x
+        baseline_mode = state.control_baseline_mode
+        baseline_delta = state.control_baseline_delta
+        baseline_initialized = state.control_baseline_initialized
+        baseline_visible = state.control_baseline_visible
+        midnight_tick_visible = state.control_baseline_midnight_tick_visible
+        midnight_tick_locked = state.control_baseline_midnight_tick_locked
+        midnight_tick_x = state.control_baseline_midnight_tick_x
 
     line_metrics_1 = (
         "p95|Y_raw| "
@@ -601,6 +686,17 @@ def _status_lines(
         "Air pocket "
         f"{_fmt_float(air_pocket, 2)} [<0.2]"
     )
+    line_control_baseline = (
+        "Control Baseline (recent normal) "
+        f"x={_fmt_float(baseline_x, 2)}  "
+        f"mode={_fmt_text(baseline_mode)}  "
+        f"delta={_fmt_float(baseline_delta, 3)}  "
+        f"init={_fmt_bool(baseline_initialized)}  "
+        f"line={_fmt_bool(baseline_visible)}  "
+        f"tick={_fmt_bool(midnight_tick_visible)}  "
+        f"locked={_fmt_bool(midnight_tick_locked)}  "
+        f"tick_x={_fmt_float(midnight_tick_x, 2)}"
+    )
     feeds_left = (
         "Feeds "
         f"{_feeds_text(perp_stats)}  "
@@ -618,7 +714,7 @@ def _status_lines(
         f"{_reconnect_text(spot_stats)}"
     )
     line_feeds = f"{feeds_left}".ljust(col_width) + feeds_right
-    return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp]
+    return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp, line_control_baseline]
 
 
 def _fmt_float(value: float | None, digits: int) -> str:
@@ -637,6 +733,18 @@ def _fmt_int(value: int | None) -> str:
     if value is None:
         return "n/a"
     return str(value)
+
+
+def _fmt_text(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    return value
+
+
+def _fmt_bool(value: bool | None) -> str:
+    if value is None:
+        return "n/a"
+    return "yes" if value else "no"
 
 
 def _sign_value(value: float) -> int:
@@ -753,17 +861,22 @@ class _BrailleCanvas:
         *,
         attr: int = 0,
     ) -> None:
-        for row, masks in enumerate(self._cells):
-            y = top + row
-            if y < 0 or y >= maxy:
-                continue
-            for col, mask in enumerate(masks):
-                if mask == 0:
+        try:
+            for row, masks in enumerate(self._cells):
+                y = top + row
+                if y < 0 or y >= maxy:
                     continue
-                x = left + col
-                if x < 0 or x >= maxx - 1:
+                if not isinstance(masks, list):
                     continue
-                _safe_addstr(stdscr, y, x, chr(0x2800 + mask), attr=attr)
+                for col, mask in enumerate(masks):
+                    if mask == 0:
+                        continue
+                    x = left + col
+                    if x < 0 or x >= maxx - 1:
+                        continue
+                    _safe_addstr(stdscr, y, x, chr(0x2800 + mask), attr=attr)
+        except (TypeError, curses.error):
+            return
 
 
 def _draw_dot(
@@ -845,6 +958,28 @@ def _draw_ellipse_ring(
             dist = nx * nx + ny * ny
             if inner <= dist <= outer:
                 canvas.set_px(center_x + dx, center_y + dy)
+
+
+def _ellipse_ring_offsets(
+    *,
+    radius_x: int,
+    radius_y: int,
+    band_inner: float,
+    band_outer: float,
+) -> list[tuple[int, int]]:
+    offsets: list[tuple[int, int]] = []
+    if radius_x <= 0 or radius_y <= 0:
+        return offsets
+    inner = band_inner
+    outer = band_outer
+    for dy in range(-radius_y - 1, radius_y + 2):
+        for dx in range(-radius_x - 1, radius_x + 2):
+            nx = dx / radius_x
+            ny = dy / radius_y
+            dist = nx * nx + ny * ny
+            if inner <= dist <= outer:
+                offsets.append((dx, dy))
+    return offsets
 
 
 def _apply_lean_offset(

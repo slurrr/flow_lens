@@ -16,6 +16,7 @@ from typing import Iterable, Literal
 Regime = Literal["impulse", "transition", "calm"]
 ScoreKey = Literal["impulse", "transition", "calm", "combined"]
 Timebase = Literal["exchange", "recv", "exchange_local"]
+CrossingTimeMode = Literal["bucket", "ms"]
 
 
 @dataclass(frozen=True)
@@ -326,9 +327,11 @@ def _first_crossing(
 def _pairwise_tournament(
     *,
     bucket_ms: int,
+    crossing_time_mode: CrossingTimeMode,
     candidates: list[str],
     series_px: dict[str, list[float | None]],
     series_age: dict[str, list[int]],
+    series_ts_ms: dict[str, list[int | None]],
     jitter_p95: dict[str, float],
     ref_px: list[float | None],
     events: list[EventWindow],
@@ -336,6 +339,8 @@ def _pairwise_tournament(
     jitter_guard_ms_default: int,
     confirm_primary_buckets: int,
     confirm_secondary_buckets: int,
+    confirm_primary_ms: int,
+    confirm_secondary_ms: int,
     cross_frac: float,
     max_stale_buckets: int,
 ) -> dict[tuple[str, str], dict[Regime, PairCounts]]:
@@ -369,13 +374,17 @@ def _pairwise_tournament(
             continue
 
         confirm_buckets = confirm_primary_buckets if e.regime != "calm" else confirm_secondary_buckets
+        confirm_ms = confirm_primary_ms if e.regime != "calm" else confirm_secondary_ms
 
         crossings: dict[str, int | None] = {}
+        crossings_ms: dict[str, int | None] = {}
         for candidate in candidates:
             px = series_px.get(candidate)
             age = series_age.get(candidate)
-            if px is None or age is None:
+            ts = series_ts_ms.get(candidate)
+            if px is None or age is None or ts is None:
                 crossings[candidate] = None
+                crossings_ms[candidate] = None
                 continue
             crossings[candidate] = _first_crossing(
                 px,
@@ -388,33 +397,70 @@ def _pairwise_tournament(
                 cross_frac=cross_frac,
                 max_stale_buckets=max_stale_buckets,
             )
+            t_cross = crossings[candidate]
+            if t_cross is None or t_cross < 0 or t_cross >= len(ts):
+                crossings_ms[candidate] = None
+            else:
+                crossings_ms[candidate] = ts[t_cross]
 
         for a, b, jitter_guard_buckets in pair_defs:
             rc = results[(a, b)][e.regime]
-            t_a = crossings.get(a)
-            t_b = crossings.get(b)
-            if t_a is None or t_b is None:
-                rc.no_contest += 1
-                continue
+            if crossing_time_mode == "bucket":
+                t_a = crossings.get(a)
+                t_b = crossings.get(b)
+                if t_a is None or t_b is None:
+                    rc.no_contest += 1
+                    continue
 
-            rc.contests += 1
+                rc.contests += 1
 
-            dt = t_b - t_a
-            if dt == 0:
-                rc.ties += 1
-                continue
-            if dt > 0:
-                if (t_a + jitter_guard_buckets) < t_b and dt <= confirm_buckets:
-                    rc.a_wins += 1
-                    rc.lead_times_ms_a.append(dt * bucket_ms)
-                else:
+                dt = t_b - t_a
+                if dt == 0:
                     rc.ties += 1
+                    continue
+                if dt > 0:
+                    if (t_a + jitter_guard_buckets) < t_b and dt <= confirm_buckets:
+                        rc.a_wins += 1
+                        rc.lead_times_ms_a.append(dt * bucket_ms)
+                    else:
+                        rc.ties += 1
+                else:
+                    if (t_b + jitter_guard_buckets) < t_a and (-dt) <= confirm_buckets:
+                        rc.b_wins += 1
+                        rc.lead_times_ms_b.append((-dt) * bucket_ms)
+                    else:
+                        rc.ties += 1
             else:
-                if (t_b + jitter_guard_buckets) < t_a and (-dt) <= confirm_buckets:
-                    rc.b_wins += 1
-                    rc.lead_times_ms_b.append((-dt) * bucket_ms)
-                else:
+                t_a_ms = crossings_ms.get(a)
+                t_b_ms = crossings_ms.get(b)
+                if t_a_ms is None or t_b_ms is None:
+                    rc.no_contest += 1
+                    continue
+
+                rc.contests += 1
+
+                dt_ms = t_b_ms - t_a_ms
+                if dt_ms == 0:
                     rc.ties += 1
+                    continue
+
+                jitter_guard_ms = max(
+                    jitter_guard_ms_default,
+                    int(jitter_p95.get(a, 0.0)),
+                    int(jitter_p95.get(b, 0.0)),
+                )
+                if dt_ms > 0:
+                    if (t_a_ms + jitter_guard_ms) < t_b_ms and dt_ms <= confirm_ms:
+                        rc.a_wins += 1
+                        rc.lead_times_ms_a.append(dt_ms)
+                    else:
+                        rc.ties += 1
+                else:
+                    if (t_b_ms + jitter_guard_ms) < t_a_ms and (-dt_ms) <= confirm_ms:
+                        rc.b_wins += 1
+                        rc.lead_times_ms_b.append(-dt_ms)
+                    else:
+                        rc.ties += 1
 
     return results
 
@@ -583,6 +629,17 @@ def main() -> int:
         default="exchange",
         help="Timebase for bucketing/alignment (default: exchange).",
     )
+    parser.add_argument(
+        "--crossing-time-mode",
+        choices=["bucket", "ms"],
+        default="bucket",
+        help=(
+            "How to compare first-crossing times. "
+            "'bucket' (default) compares bucket indices (quantized by --bucket-ms). "
+            "'ms' compares per-bucket effective timestamps (BucketAgg.last_ts_ms) with jitter_guard in ms; "
+            "this reduces bucket quantization artifacts but still uses bucketed series for crossing detection."
+        ),
+    )
     parser.add_argument("--out", default="", help="Output path (txt). Default writes to docs/diagnostics with timestamp.")
     args = parser.parse_args()
 
@@ -599,6 +656,8 @@ def main() -> int:
     cooldown_buckets = max(1, int(round(float(args.cooldown_s) * 1000 / bucket_ms)))
     confirm_primary_buckets = max(1, int(round(float(args.confirm_primary_s) * 1000 / bucket_ms)))
     confirm_secondary_buckets = max(1, int(round(float(args.confirm_secondary_s) * 1000 / bucket_ms)))
+    confirm_primary_ms = max(1, int(round(float(args.confirm_primary_s) * 1000.0)))
+    confirm_secondary_ms = max(1, int(round(float(args.confirm_secondary_s) * 1000.0)))
     max_stale_buckets = max(0, int(round(float(args.max_stale_s) * 1000 / bucket_ms)))
     drop_stale = bool(args.drop_stale)
     max_wire_lag_ms = max(0, int(args.max_wire_lag_ms))
@@ -608,6 +667,10 @@ def main() -> int:
     if timebase_str not in ("exchange", "recv", "exchange_local"):
         raise ValueError(f"Invalid timebase: {timebase_str!r}")
     timebase: Timebase = timebase_str
+    crossing_time_mode_str = str(args.crossing_time_mode)
+    if crossing_time_mode_str not in ("bucket", "ms"):
+        raise ValueError(f"Invalid crossing-time-mode: {crossing_time_mode_str!r}")
+    crossing_time_mode: CrossingTimeMode = crossing_time_mode_str
 
     thresholds: list[int] = []
     if str(args.wire_lag_thresholds_ms).strip():
@@ -724,6 +787,7 @@ def main() -> int:
     if meta.created_at_ms > 0 and meta.stop_at_ms > meta.created_at_ms:
         report_lines.append(f"capture_duration_s={(meta.stop_at_ms - meta.created_at_ms) / 1000.0:.1f}")
     report_lines.append(f"bucket_ms={bucket_ms} horizon_ms={args.return_horizon_ms} dir_horizon_ms={args.dir_horizon_ms}")
+    report_lines.append(f"crossing_time_mode={crossing_time_mode}")
     report_lines.append(f"pre_s={args.pre_s} post_s={args.post_s} cooldown_s={args.cooldown_s} cross_frac={args.cross_frac}")
     report_lines.append(f"confirm_primary_s={args.confirm_primary_s} confirm_secondary_s={args.confirm_secondary_s} jitter_guard_ms={args.jitter_guard_ms}")
     report_lines.append(f"exclude_ref={sorted(exclude_ref)}")
@@ -755,6 +819,7 @@ def main() -> int:
 
             series_px: dict[str, list[float | None]] = {}
             series_age: dict[str, list[int]] = {}
+            series_ts_ms: dict[str, list[int | None]] = {}
             offsets_ms: dict[str, float] = {}
             jitter_p95: dict[str, float] = {}
 
@@ -764,9 +829,11 @@ def main() -> int:
                 jitter_p95[cid] = s.recv_minus_exchange.pct(0.95)
                 arr: list[float | None] = [None] * n
                 age: list[int] = [max_stale_buckets + 1] * n
+                ts_arr: list[int | None] = [None] * n
 
                 last_px: float | None = None
                 last_idx: int | None = None
+                last_ts: int | None = None
                 buckets = by_candidate[cid]
                 for i in range(n):
                     b = start_bucket + i
@@ -778,6 +845,8 @@ def main() -> int:
                             age[i] = 0
                             last_px = p
                             last_idx = i
+                            last_ts = int(agg.last_ts_ms) if agg.last_ts_ms > 0 else last_ts
+                            ts_arr[i] = last_ts
                             continue
                     if last_px is None or last_idx is None:
                         continue
@@ -785,9 +854,11 @@ def main() -> int:
                     age[i] = gap
                     if gap <= max_stale_buckets:
                         arr[i] = last_px
+                        ts_arr[i] = last_ts
 
                 series_px[cid] = arr
                 series_age[cid] = age
+                series_ts_ms[cid] = ts_arr
 
             # Composite reference is median across candidates (excluding some)
             ref_px: list[float | None] = [None] * n
@@ -815,9 +886,11 @@ def main() -> int:
 
             pair_results = _pairwise_tournament(
                 bucket_ms=bucket_ms,
+                crossing_time_mode=crossing_time_mode,
                 candidates=candidates,
                 series_px=series_px,
                 series_age=series_age,
+                series_ts_ms=series_ts_ms,
                 jitter_p95=jitter_p95,
                 ref_px=ref_px,
                 events=events,
@@ -825,6 +898,8 @@ def main() -> int:
                 jitter_guard_ms_default=int(args.jitter_guard_ms),
                 confirm_primary_buckets=confirm_primary_buckets,
                 confirm_secondary_buckets=confirm_secondary_buckets,
+                confirm_primary_ms=confirm_primary_ms,
+                confirm_secondary_ms=confirm_secondary_ms,
                 cross_frac=float(args.cross_frac),
                 max_stale_buckets=max_stale_buckets,
             )

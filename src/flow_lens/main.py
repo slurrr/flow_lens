@@ -34,6 +34,7 @@ from flow_lens.engine.buffer import (
 )
 from flow_lens.engine.constants import (
     Binning,
+    ControlBaseline,
     Defaults,
     DispScaleConfig,
     EffectivenessDeadband,
@@ -47,8 +48,10 @@ from flow_lens.engine.constants import (
     Smoothing,
     TimeDomain,
 )
+from flow_lens.engine.control_baseline import DynamicControlBaseline
 from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
+from flow_lens.ingest.hygiene import HygieneConfig, HygieneIngestor, HygieneMetricsEvent
 from flow_lens.models.event import Event
 from flow_lens.symbols import (
     BinanceSymbolResolver,
@@ -76,6 +79,7 @@ class RuntimeState:
     coinbase_base_to_actual: dict[str, list[str]]
     bybit_spot_base_to_actual: dict[str, list[str]]
     bybit_perp_base_to_actual: dict[str, list[str]]
+    hygiene: HygieneIngestor
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,23 @@ def _run(
             halo_thresholds=config.binning_halo_thresholds,
             hysteresis_band=config.binning_hysteresis_band,
         ),
+        control_baseline=ControlBaseline(
+            enabled=config.control_baseline_enabled,
+            target_window_s=config.control_baseline_target_window_s,
+            target_update_s=config.control_baseline_target_update_s,
+            breakout_band=config.control_baseline_breakout_band,
+            confirm_s=config.control_baseline_confirm_s,
+            exit_band_frac=config.control_baseline_exit_band_frac,
+            peg_half_life_s=config.control_baseline_peg_half_life_s,
+            reanchor_half_life_s=config.control_baseline_reanchor_half_life_s,
+            peg_deadband=config.control_baseline_peg_deadband,
+            max_window_samples=config.control_baseline_max_window_samples,
+            center_suppress_band=config.control_baseline_center_suppress_band,
+            line_hide_warmup_s=config.control_baseline_line_hide_warmup_s,
+            midnight_tick_enabled=config.control_baseline_midnight_tick_enabled,
+            midnight_tick_min_samples=config.control_baseline_midnight_tick_min_samples,
+            midnight_tick_min_elapsed_s=config.control_baseline_midnight_tick_min_elapsed_s,
+        ),
     )
     logging.info("Runtime config: %s", _runtime_config_map(config))
     _log_source_registry(config)
@@ -253,6 +274,24 @@ def _run(
         selector_stale_failover_ms=config.price_selector_stale_failover_ms,
         selector_recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
         selector_switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
+        hygiene_config=HygieneConfig(
+            enabled=config.hygiene_enabled,
+            max_excess_wire_lag_ms=config.hygiene_max_excess_wire_lag_ms,
+            hard_max_wire_lag_ms=config.hygiene_hard_max_wire_lag_ms,
+            wire_lag_baseline_window_s=config.hygiene_wire_lag_baseline_window_s,
+            wire_lag_baseline_sample_interval_ms=(
+                config.hygiene_wire_lag_baseline_sample_interval_ms
+            ),
+            wire_lag_baseline_min_samples=config.hygiene_wire_lag_baseline_min_samples,
+            wire_lag_baseline_max_samples=config.hygiene_wire_lag_baseline_max_samples,
+            dedupe_ttl_s=config.hygiene_dedupe_ttl_s,
+            log_interval_s=config.hygiene_log_interval_s,
+            future_venue_ts_grace_ms=config.hygiene_future_venue_ts_grace_ms,
+            connect_gate_s=config.hygiene_connect_gate_s,
+            connect_gate_max_excess_wire_lag_ms=config.hygiene_connect_gate_max_excess_wire_lag_ms,
+            connect_gate_hard_max_wire_lag_ms=config.hygiene_connect_gate_hard_max_wire_lag_ms,
+            connect_gate_rearm_after_s=config.hygiene_connect_gate_rearm_after_s,
+        ),
         coinbase_base_to_actual=_coinbase_base_to_actual(coinbase_product_map),
         bybit_spot_base_to_actual=bybit_spot_base_to_actual,
         bybit_perp_base_to_actual=bybit_perp_base_to_actual,
@@ -270,6 +309,7 @@ def _run(
             frame_inset_px=config.tui_frame_inset_px,
             frame_band_inner=config.tui_frame_band_inner,
             frame_band_outer=config.tui_frame_band_outer,
+            control_baseline_center_suppress_band=config.control_baseline_center_suppress_band,
             axis_flash_duration_s=config.update_window_seconds,
             axis_flash_cooldown_s=config.update_window_seconds,
         )
@@ -301,7 +341,7 @@ def _run(
         now = time.monotonic()
         if now - last_update >= update_interval_s:
             last_update = now
-            now_ms = int(time.time() * 1000)
+            now_ms = int(time.time_ns() // 1_000_000)
             tbt_cutoffs, tbt_windows = _build_tbt_settings(
                 runtime,
                 supervisor,
@@ -327,7 +367,7 @@ def _run(
         if now - last_frame >= 1 / 30.0:
             last_frame = now
             symbol = input_state.symbol
-            now_ms = int(time.time() * 1000)
+            now_ms = int(time.time_ns() // 1_000_000)
             status_spot = _combine_status(
                 [
                     _adapter_status(
@@ -682,6 +722,7 @@ def _init_runtime(
     selector_stale_failover_ms: int,
     selector_recovery_confirm_cycles: int,
     selector_switch_cooldown_cycles: int,
+    hygiene_config: HygieneConfig,
     coinbase_base_to_actual: dict[str, list[str]],
     bybit_spot_base_to_actual: dict[str, list[str]],
     bybit_perp_base_to_actual: dict[str, list[str]],
@@ -703,7 +744,12 @@ def _init_runtime(
             ),
         )
         engine = StateEngine(defaults)
-        loops[symbol] = EngineLoop(symbol=symbol, buffer=buffer, engine=engine)
+        loops[symbol] = EngineLoop(
+            symbol=symbol,
+            buffer=buffer,
+            engine=engine,
+            control_baseline=DynamicControlBaseline(defaults.control_baseline),
+        )
         last_state[symbol] = None
 
     return RuntimeState(
@@ -718,6 +764,7 @@ def _init_runtime(
         coinbase_base_to_actual=coinbase_base_to_actual,
         bybit_spot_base_to_actual=bybit_spot_base_to_actual,
         bybit_perp_base_to_actual=bybit_perp_base_to_actual,
+        hygiene=HygieneIngestor(hygiene_config),
     )
 
 
@@ -732,8 +779,11 @@ def _drain_events(queue_events: queue.Queue[AdapterEvent], runtime: RuntimeState
             base_symbol = _legacy_map_to_base(item, runtime.symbol_maps)
         if base_symbol is None or base_symbol not in runtime.pending:
             continue
-        runtime.pending[base_symbol].append(item.event)
-        runtime.last_event_ms[base_symbol] = item.event.timestamp
+        event = runtime.hygiene.process(item, base_symbol=base_symbol)
+        if event is None:
+            continue
+        runtime.pending[base_symbol].append(event)
+        runtime.last_event_ms[base_symbol] = event.timestamp
 
 
 def _apply_source_filter(
@@ -760,6 +810,7 @@ def _apply_source_filter(
     loop.source_allowlist = new_allowlist
     loop.buffer.reset_context()
     loop.engine.reset_context()
+    loop.control_baseline.reset_context()
     runtime.pending[symbol] = []
     runtime.last_state[symbol] = None
     runtime.last_event_ms[symbol] = None
@@ -847,6 +898,9 @@ def _update_state(
         diagnostics.log_filter_resets(now_ms, runtime.filter_reset_events)
     if runtime.filter_reset_events:
         runtime.filter_reset_events.clear()
+    if diagnostics is not None:
+        for metrics in runtime.hygiene.flush_due(now_ms):
+            diagnostics.log_hygiene_metrics(now_ms, metrics)
 
 
 def _adapter_status(
@@ -1105,6 +1159,23 @@ class DiagnosticLogger:
             "top_source_id": state.top_source_id,
             "top_source_effort": state.top_source_effort,
         }
+        if state.control_baseline_enabled:
+            record.update(
+                {
+                    "control_baseline_enabled": state.control_baseline_enabled,
+                    "control_baseline_initialized": state.control_baseline_initialized,
+                    "control_baseline_x": state.control_baseline_x,
+                    "control_baseline_target_x": state.control_baseline_target_x,
+                    "control_baseline_mode": state.control_baseline_mode,
+                    "control_baseline_breakout_age_s": state.control_baseline_breakout_age_s,
+                    "control_baseline_delta": state.control_baseline_delta,
+                    "control_baseline_visible": state.control_baseline_visible,
+                    "control_baseline_midnight_tick_visible": state.control_baseline_midnight_tick_visible,
+                    "control_baseline_midnight_tick_locked": state.control_baseline_midnight_tick_locked,
+                    "control_baseline_midnight_tick_x": state.control_baseline_midnight_tick_x,
+                    "control_baseline_midnight_tick_samples": state.control_baseline_midnight_tick_samples,
+                }
+            )
         self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
         self._file.flush()
         self._line_count += 1
@@ -1164,6 +1235,33 @@ class DiagnosticLogger:
             "price_series_side": buffer.price_series_side,
             "price_series_used": buffer.price_series_side,
             "reason": "no_eligible_price_source",
+        }
+        self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+        self._line_count += 1
+        self._file.flush()
+        self._rotate_if_needed()
+
+    def log_hygiene_metrics(self, now_ms: int, metrics: HygieneMetricsEvent) -> None:
+        if metrics.symbol.upper() not in self._symbols:
+            return
+        record = {
+            "event_type": "hygiene_metrics",
+            "ts_wall_ms": int(time.time() * 1000),
+            "now_ms": now_ms,
+            "symbol": metrics.symbol,
+            "source_id": metrics.source_id,
+            "interval_start_ms": metrics.interval_start_ms,
+            "interval_end_ms": metrics.interval_end_ms,
+            "samples_with_venue_ts": metrics.samples_with_venue_ts,
+            "wire_lag_ms_p50": metrics.wire_lag_ms_p50,
+            "wire_lag_ms_p95": metrics.wire_lag_ms_p95,
+            "stale_on_arrival_dropped": metrics.stale_on_arrival_dropped,
+            "dedupe_dropped": metrics.dedupe_dropped,
+            "venue_ts_missing": metrics.venue_ts_missing,
+            "negative_wire_lag": metrics.negative_wire_lag,
+            "future_venue_ts": metrics.future_venue_ts,
+            "connect_gate_rearm_inactivity": metrics.connect_gate_rearm_inactivity,
+            "connect_gate_rearm_stale_burst": metrics.connect_gate_rearm_stale_burst,
         }
         self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
         self._line_count += 1
@@ -1233,6 +1331,41 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "binning_dot_size_thresholds": config.binning_dot_size_thresholds,
         "binning_halo_thresholds": config.binning_halo_thresholds,
         "binning_hysteresis_band": config.binning_hysteresis_band,
+        "control_baseline_enabled": config.control_baseline_enabled,
+        "control_baseline_target_window_s": config.control_baseline_target_window_s,
+        "control_baseline_target_update_s": config.control_baseline_target_update_s,
+        "control_baseline_breakout_band": config.control_baseline_breakout_band,
+        "control_baseline_confirm_s": config.control_baseline_confirm_s,
+        "control_baseline_exit_band_frac": config.control_baseline_exit_band_frac,
+        "control_baseline_peg_half_life_s": config.control_baseline_peg_half_life_s,
+        "control_baseline_reanchor_half_life_s": config.control_baseline_reanchor_half_life_s,
+        "control_baseline_peg_deadband": config.control_baseline_peg_deadband,
+        "control_baseline_max_window_samples": config.control_baseline_max_window_samples,
+        "control_baseline_center_suppress_band": config.control_baseline_center_suppress_band,
+        "control_baseline_line_hide_warmup_s": config.control_baseline_line_hide_warmup_s,
+        "control_baseline_midnight_tick_enabled": config.control_baseline_midnight_tick_enabled,
+        "control_baseline_midnight_tick_min_samples": config.control_baseline_midnight_tick_min_samples,
+        "control_baseline_midnight_tick_min_elapsed_s": config.control_baseline_midnight_tick_min_elapsed_s,
+        "hygiene_enabled": config.hygiene_enabled,
+        "hygiene_max_excess_wire_lag_ms": config.hygiene_max_excess_wire_lag_ms,
+        "hygiene_hard_max_wire_lag_ms": config.hygiene_hard_max_wire_lag_ms,
+        "hygiene_wire_lag_baseline_window_s": config.hygiene_wire_lag_baseline_window_s,
+        "hygiene_wire_lag_baseline_sample_interval_ms": (
+            config.hygiene_wire_lag_baseline_sample_interval_ms
+        ),
+        "hygiene_wire_lag_baseline_min_samples": config.hygiene_wire_lag_baseline_min_samples,
+        "hygiene_wire_lag_baseline_max_samples": config.hygiene_wire_lag_baseline_max_samples,
+        "hygiene_dedupe_ttl_s": config.hygiene_dedupe_ttl_s,
+        "hygiene_log_interval_s": config.hygiene_log_interval_s,
+        "hygiene_future_venue_ts_grace_ms": config.hygiene_future_venue_ts_grace_ms,
+        "hygiene_connect_gate_s": config.hygiene_connect_gate_s,
+        "hygiene_connect_gate_max_excess_wire_lag_ms": (
+            config.hygiene_connect_gate_max_excess_wire_lag_ms
+        ),
+        "hygiene_connect_gate_hard_max_wire_lag_ms": (
+            config.hygiene_connect_gate_hard_max_wire_lag_ms
+        ),
+        "hygiene_connect_gate_rearm_after_s": config.hygiene_connect_gate_rearm_after_s,
         "tui_min_width": config.tui_min_width,
         "tui_min_height": config.tui_min_height,
         "tui_max_width": config.tui_max_width,

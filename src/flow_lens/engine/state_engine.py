@@ -88,6 +88,18 @@ class StateSnapshot:
     max_source_share: float
     top_source_id: str | None
     top_source_effort: float
+    control_baseline_enabled: bool = False
+    control_baseline_initialized: bool = False
+    control_baseline_x: float = 0.0
+    control_baseline_target_x: float = 0.0
+    control_baseline_mode: str = "peg"
+    control_baseline_breakout_age_s: float = 0.0
+    control_baseline_delta: float = 0.0
+    control_baseline_visible: bool = False
+    control_baseline_midnight_tick_visible: bool = False
+    control_baseline_midnight_tick_locked: bool = False
+    control_baseline_midnight_tick_x: float | None = None
+    control_baseline_midnight_tick_samples: int = 0
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ from flow_lens.engine.buffer import (
 )
 from flow_lens.engine.constants import (
     Binning,
+    ControlBaseline,
     Defaults,
     DispScaleConfig,
     EffectivenessDeadband,
@@ -34,6 +35,7 @@ from flow_lens.engine.constants import (
     Smoothing,
     TimeDomain,
 )
+from flow_lens.engine.control_baseline import DynamicControlBaseline
 from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
 from flow_lens.models.event import AggressorSide, Event, SideType
@@ -281,6 +283,23 @@ def _build_defaults(config: AppConfig) -> Defaults:
             halo_thresholds=config.binning_halo_thresholds,
             hysteresis_band=config.binning_hysteresis_band,
         ),
+        control_baseline=ControlBaseline(
+            enabled=config.control_baseline_enabled,
+            target_window_s=config.control_baseline_target_window_s,
+            target_update_s=config.control_baseline_target_update_s,
+            breakout_band=config.control_baseline_breakout_band,
+            confirm_s=config.control_baseline_confirm_s,
+            exit_band_frac=config.control_baseline_exit_band_frac,
+            peg_half_life_s=config.control_baseline_peg_half_life_s,
+            reanchor_half_life_s=config.control_baseline_reanchor_half_life_s,
+            peg_deadband=config.control_baseline_peg_deadband,
+            max_window_samples=config.control_baseline_max_window_samples,
+            center_suppress_band=config.control_baseline_center_suppress_band,
+            line_hide_warmup_s=config.control_baseline_line_hide_warmup_s,
+            midnight_tick_enabled=config.control_baseline_midnight_tick_enabled,
+            midnight_tick_min_samples=config.control_baseline_midnight_tick_min_samples,
+            midnight_tick_min_elapsed_s=config.control_baseline_midnight_tick_min_elapsed_s,
+        ),
     )
 
 
@@ -354,6 +373,35 @@ def _config_snapshot(config: AppConfig) -> dict[str, object]:
         "effort_scale_percentile": config.effort_scale_percentile,
         "effort_scale_min_samples": config.effort_scale_min_samples,
         "size_scale_percentile": config.size_scale_percentile,
+        "control_baseline_enabled": config.control_baseline_enabled,
+        "control_baseline_target_window_s": config.control_baseline_target_window_s,
+        "control_baseline_target_update_s": config.control_baseline_target_update_s,
+        "control_baseline_breakout_band": config.control_baseline_breakout_band,
+        "control_baseline_confirm_s": config.control_baseline_confirm_s,
+        "control_baseline_exit_band_frac": config.control_baseline_exit_band_frac,
+        "control_baseline_peg_half_life_s": config.control_baseline_peg_half_life_s,
+        "control_baseline_reanchor_half_life_s": config.control_baseline_reanchor_half_life_s,
+        "control_baseline_peg_deadband": config.control_baseline_peg_deadband,
+        "control_baseline_max_window_samples": config.control_baseline_max_window_samples,
+        "control_baseline_center_suppress_band": config.control_baseline_center_suppress_band,
+        "control_baseline_line_hide_warmup_s": config.control_baseline_line_hide_warmup_s,
+        "control_baseline_midnight_tick_enabled": config.control_baseline_midnight_tick_enabled,
+        "control_baseline_midnight_tick_min_samples": config.control_baseline_midnight_tick_min_samples,
+        "control_baseline_midnight_tick_min_elapsed_s": config.control_baseline_midnight_tick_min_elapsed_s,
+        "hygiene_enabled": config.hygiene_enabled,
+        "hygiene_max_excess_wire_lag_ms": config.hygiene_max_excess_wire_lag_ms,
+        "hygiene_hard_max_wire_lag_ms": config.hygiene_hard_max_wire_lag_ms,
+        "hygiene_wire_lag_baseline_window_s": config.hygiene_wire_lag_baseline_window_s,
+        "hygiene_wire_lag_baseline_sample_interval_ms": config.hygiene_wire_lag_baseline_sample_interval_ms,
+        "hygiene_wire_lag_baseline_min_samples": config.hygiene_wire_lag_baseline_min_samples,
+        "hygiene_wire_lag_baseline_max_samples": config.hygiene_wire_lag_baseline_max_samples,
+        "hygiene_dedupe_ttl_s": config.hygiene_dedupe_ttl_s,
+        "hygiene_log_interval_s": config.hygiene_log_interval_s,
+        "hygiene_future_venue_ts_grace_ms": config.hygiene_future_venue_ts_grace_ms,
+        "hygiene_connect_gate_s": config.hygiene_connect_gate_s,
+        "hygiene_connect_gate_max_excess_wire_lag_ms": config.hygiene_connect_gate_max_excess_wire_lag_ms,
+        "hygiene_connect_gate_hard_max_wire_lag_ms": config.hygiene_connect_gate_hard_max_wire_lag_ms,
+        "hygiene_connect_gate_rearm_after_s": config.hygiene_connect_gate_rearm_after_s,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -376,6 +424,20 @@ def _effective_config_snapshot(
     price_selector_stale_failover_ms: int,
     price_selector_recovery_confirm_cycles: int,
     price_selector_switch_cooldown_cycles: int,
+    hygiene_enabled: bool,
+    hygiene_max_excess_wire_lag_ms: int,
+    hygiene_hard_max_wire_lag_ms: int,
+    hygiene_wire_lag_baseline_window_s: int,
+    hygiene_wire_lag_baseline_sample_interval_ms: int,
+    hygiene_wire_lag_baseline_min_samples: int,
+    hygiene_wire_lag_baseline_max_samples: int,
+    hygiene_dedupe_ttl_s: int,
+    hygiene_log_interval_s: int,
+    hygiene_future_venue_ts_grace_ms: int,
+    hygiene_connect_gate_s: int,
+    hygiene_connect_gate_max_excess_wire_lag_ms: int,
+    hygiene_connect_gate_hard_max_wire_lag_ms: int,
+    hygiene_connect_gate_rearm_after_s: int,
     source_registry: dict[str, object],
 ) -> dict[str, object]:
     return {
@@ -415,6 +477,35 @@ def _effective_config_snapshot(
         "effort_scale_percentile": defaults.effort_scale.percentile,
         "effort_scale_min_samples": defaults.effort_scale.min_samples,
         "size_scale_percentile": defaults.size_scale.percentile,
+        "control_baseline_enabled": defaults.control_baseline.enabled,
+        "control_baseline_target_window_s": defaults.control_baseline.target_window_s,
+        "control_baseline_target_update_s": defaults.control_baseline.target_update_s,
+        "control_baseline_breakout_band": defaults.control_baseline.breakout_band,
+        "control_baseline_confirm_s": defaults.control_baseline.confirm_s,
+        "control_baseline_exit_band_frac": defaults.control_baseline.exit_band_frac,
+        "control_baseline_peg_half_life_s": defaults.control_baseline.peg_half_life_s,
+        "control_baseline_reanchor_half_life_s": defaults.control_baseline.reanchor_half_life_s,
+        "control_baseline_peg_deadband": defaults.control_baseline.peg_deadband,
+        "control_baseline_max_window_samples": defaults.control_baseline.max_window_samples,
+        "control_baseline_center_suppress_band": defaults.control_baseline.center_suppress_band,
+        "control_baseline_line_hide_warmup_s": defaults.control_baseline.line_hide_warmup_s,
+        "control_baseline_midnight_tick_enabled": defaults.control_baseline.midnight_tick_enabled,
+        "control_baseline_midnight_tick_min_samples": defaults.control_baseline.midnight_tick_min_samples,
+        "control_baseline_midnight_tick_min_elapsed_s": defaults.control_baseline.midnight_tick_min_elapsed_s,
+        "hygiene_enabled": hygiene_enabled,
+        "hygiene_max_excess_wire_lag_ms": hygiene_max_excess_wire_lag_ms,
+        "hygiene_hard_max_wire_lag_ms": hygiene_hard_max_wire_lag_ms,
+        "hygiene_wire_lag_baseline_window_s": hygiene_wire_lag_baseline_window_s,
+        "hygiene_wire_lag_baseline_sample_interval_ms": hygiene_wire_lag_baseline_sample_interval_ms,
+        "hygiene_wire_lag_baseline_min_samples": hygiene_wire_lag_baseline_min_samples,
+        "hygiene_wire_lag_baseline_max_samples": hygiene_wire_lag_baseline_max_samples,
+        "hygiene_dedupe_ttl_s": hygiene_dedupe_ttl_s,
+        "hygiene_log_interval_s": hygiene_log_interval_s,
+        "hygiene_future_venue_ts_grace_ms": hygiene_future_venue_ts_grace_ms,
+        "hygiene_connect_gate_s": hygiene_connect_gate_s,
+        "hygiene_connect_gate_max_excess_wire_lag_ms": hygiene_connect_gate_max_excess_wire_lag_ms,
+        "hygiene_connect_gate_hard_max_wire_lag_ms": hygiene_connect_gate_hard_max_wire_lag_ms,
+        "hygiene_connect_gate_rearm_after_s": hygiene_connect_gate_rearm_after_s,
         "effort_floor_multiplier": defaults.effort_floor.multiplier_alpha,
         "effort_floor_ticks": defaults.effort_floor.rolling_window_ticks,
         "smoothing_dominance_alpha": defaults.smoothing.dominance_alpha,
@@ -582,6 +673,23 @@ def _log_record(
         "persist_neutral_dir_abs_flash": state.persist_neutral_dir_abs_flash,
         "persist_neutral_dir_abs_persist": state.persist_neutral_dir_abs_persist,
     }
+    if state.control_baseline_enabled:
+        record.update(
+            {
+                "control_baseline_enabled": state.control_baseline_enabled,
+                "control_baseline_initialized": state.control_baseline_initialized,
+                "control_baseline_x": state.control_baseline_x,
+                "control_baseline_target_x": state.control_baseline_target_x,
+                "control_baseline_mode": state.control_baseline_mode,
+                "control_baseline_breakout_age_s": state.control_baseline_breakout_age_s,
+                "control_baseline_delta": state.control_baseline_delta,
+                "control_baseline_visible": state.control_baseline_visible,
+                "control_baseline_midnight_tick_visible": state.control_baseline_midnight_tick_visible,
+                "control_baseline_midnight_tick_locked": state.control_baseline_midnight_tick_locked,
+                "control_baseline_midnight_tick_x": state.control_baseline_midnight_tick_x,
+                "control_baseline_midnight_tick_samples": state.control_baseline_midnight_tick_samples,
+            }
+        )
     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
     for switch in switch_events:
         switch_record = {
@@ -795,6 +903,20 @@ def main() -> None:
         price_selector_stale_failover_ms=config.price_selector_stale_failover_ms,
         price_selector_recovery_confirm_cycles=config.price_selector_recovery_confirm_cycles,
         price_selector_switch_cooldown_cycles=config.price_selector_switch_cooldown_cycles,
+        hygiene_enabled=config.hygiene_enabled,
+        hygiene_max_excess_wire_lag_ms=config.hygiene_max_excess_wire_lag_ms,
+        hygiene_hard_max_wire_lag_ms=config.hygiene_hard_max_wire_lag_ms,
+        hygiene_wire_lag_baseline_window_s=config.hygiene_wire_lag_baseline_window_s,
+        hygiene_wire_lag_baseline_sample_interval_ms=config.hygiene_wire_lag_baseline_sample_interval_ms,
+        hygiene_wire_lag_baseline_min_samples=config.hygiene_wire_lag_baseline_min_samples,
+        hygiene_wire_lag_baseline_max_samples=config.hygiene_wire_lag_baseline_max_samples,
+        hygiene_dedupe_ttl_s=config.hygiene_dedupe_ttl_s,
+        hygiene_log_interval_s=config.hygiene_log_interval_s,
+        hygiene_future_venue_ts_grace_ms=config.hygiene_future_venue_ts_grace_ms,
+        hygiene_connect_gate_s=config.hygiene_connect_gate_s,
+        hygiene_connect_gate_max_excess_wire_lag_ms=config.hygiene_connect_gate_max_excess_wire_lag_ms,
+        hygiene_connect_gate_hard_max_wire_lag_ms=config.hygiene_connect_gate_hard_max_wire_lag_ms,
+        hygiene_connect_gate_rearm_after_s=config.hygiene_connect_gate_rearm_after_s,
         source_registry=requested_source_registry,
     )
     _verify_replay_config_parity(config_requested, config_effective)
@@ -866,7 +988,12 @@ def main() -> None:
             ),
         )
         engine = StateEngine(defaults)
-        loop = EngineLoop(symbol=base_symbol, buffer=buffer, engine=engine)
+        loop = EngineLoop(
+            symbol=base_symbol,
+            buffer=buffer,
+            engine=engine,
+            control_baseline=DynamicControlBaseline(defaults.control_baseline),
+        )
         tbt_trackers = {"spot": TbtTracker(), "perp": TbtTracker()}
 
         timestamp_tag = time.strftime("%Y%m%d-%H%M%S")

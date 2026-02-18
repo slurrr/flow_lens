@@ -47,6 +47,7 @@ class BaseAdapter:
         self._reconnect_delay_s = reconnect_delay_s
         self._connected = False
         self._last_event_ms: dict[str, int] = {}
+        self._last_recv_ms_monotonic: dict[str, int] = {}
         self._message_count = 0
         self._dropped_count = 0
         self._reconnect_count = 0
@@ -126,6 +127,13 @@ class BaseAdapter:
                 self._tbt_mean_ms[symbol] = new_mean
                 self._tbt_count[symbol] = count + 1
         self._last_event_ms[symbol] = timestamp_ms
+
+    def _clamp_recv_timestamp_ms(self, symbol: str, timestamp_ms: int) -> int:
+        last = self._last_recv_ms_monotonic.get(symbol)
+        if last is not None and timestamp_ms <= last:
+            timestamp_ms = last + 1
+        self._last_recv_ms_monotonic[symbol] = timestamp_ms
+        return timestamp_ms
 
     def _mark_message(self, *, dropped: bool) -> None:
         self._message_count += 1

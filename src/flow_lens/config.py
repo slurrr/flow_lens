@@ -86,6 +86,35 @@ class AppConfig:
     effort_scale_percentile: float
     effort_scale_min_samples: int
     size_scale_percentile: float
+    control_baseline_enabled: bool
+    control_baseline_target_window_s: float
+    control_baseline_target_update_s: float
+    control_baseline_breakout_band: float
+    control_baseline_confirm_s: float
+    control_baseline_exit_band_frac: float
+    control_baseline_peg_half_life_s: float
+    control_baseline_reanchor_half_life_s: float
+    control_baseline_peg_deadband: float
+    control_baseline_max_window_samples: int | None
+    control_baseline_center_suppress_band: float
+    control_baseline_line_hide_warmup_s: float
+    control_baseline_midnight_tick_enabled: bool
+    control_baseline_midnight_tick_min_samples: int
+    control_baseline_midnight_tick_min_elapsed_s: float
+    hygiene_enabled: bool
+    hygiene_max_excess_wire_lag_ms: int
+    hygiene_hard_max_wire_lag_ms: int
+    hygiene_wire_lag_baseline_window_s: int
+    hygiene_wire_lag_baseline_sample_interval_ms: int
+    hygiene_wire_lag_baseline_min_samples: int
+    hygiene_wire_lag_baseline_max_samples: int
+    hygiene_dedupe_ttl_s: int
+    hygiene_log_interval_s: int
+    hygiene_future_venue_ts_grace_ms: int
+    hygiene_connect_gate_s: int
+    hygiene_connect_gate_max_excess_wire_lag_ms: int
+    hygiene_connect_gate_hard_max_wire_lag_ms: int
+    hygiene_connect_gate_rearm_after_s: int
     tui_min_width: int
     tui_min_height: int
     tui_max_width: int
@@ -168,6 +197,74 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     effort_scale_percentile = runtime_section.get("effort_scale_percentile", 0.5)
     effort_scale_min_samples = runtime_section.get("effort_scale_min_samples", 20)
     size_scale_percentile = runtime_section.get("size_scale_percentile", effort_scale_percentile)
+    control_baseline_enabled = runtime_section.get("control_baseline_enabled", True)
+    control_baseline_target_window_s = runtime_section.get(
+        "control_baseline_target_window_s", 1800.0
+    )
+    control_baseline_target_update_s = runtime_section.get(
+        "control_baseline_target_update_s", 10.0
+    )
+    control_baseline_breakout_band = runtime_section.get("control_baseline_breakout_band", 0.06)
+    control_baseline_confirm_s = runtime_section.get("control_baseline_confirm_s", 30.0)
+    control_baseline_exit_band_frac = runtime_section.get(
+        "control_baseline_exit_band_frac", 0.50
+    )
+    control_baseline_peg_half_life_s = runtime_section.get(
+        "control_baseline_peg_half_life_s", 7200.0
+    )
+    control_baseline_reanchor_half_life_s = runtime_section.get(
+        "control_baseline_reanchor_half_life_s", 180.0
+    )
+    control_baseline_peg_deadband = runtime_section.get("control_baseline_peg_deadband", 0.015)
+    control_baseline_max_window_samples = runtime_section.get(
+        "control_baseline_max_window_samples", None
+    )
+    control_baseline_center_suppress_band = runtime_section.get(
+        "control_baseline_center_suppress_band", 0.02
+    )
+    control_baseline_line_hide_warmup_s = runtime_section.get(
+        "control_baseline_line_hide_warmup_s", 120.0
+    )
+    control_baseline_midnight_tick_enabled = runtime_section.get(
+        "control_baseline_midnight_tick_enabled", True
+    )
+    control_baseline_midnight_tick_min_samples = runtime_section.get(
+        "control_baseline_midnight_tick_min_samples", 60
+    )
+    control_baseline_midnight_tick_min_elapsed_s = runtime_section.get(
+        "control_baseline_midnight_tick_min_elapsed_s", 600.0
+    )
+    hygiene_section = runtime_section.get("hygiene", {})
+    if not isinstance(hygiene_section, dict):
+        raise ValueError("runtime.hygiene must be a table.")
+    hygiene_enabled = hygiene_section.get("enabled", True)
+    hygiene_max_excess_wire_lag_ms = hygiene_section.get(
+        "max_excess_wire_lag_ms",
+        hygiene_section.get("max_wire_lag_ms", 2000),
+    )
+    hygiene_hard_max_wire_lag_ms = hygiene_section.get("hard_max_wire_lag_ms", 30000)
+    hygiene_wire_lag_baseline_window_s = hygiene_section.get("wire_lag_baseline_window_s", 300)
+    hygiene_wire_lag_baseline_sample_interval_ms = hygiene_section.get(
+        "wire_lag_baseline_sample_interval_ms", 200
+    )
+    hygiene_wire_lag_baseline_min_samples = hygiene_section.get(
+        "wire_lag_baseline_min_samples", 30
+    )
+    hygiene_wire_lag_baseline_max_samples = hygiene_section.get(
+        "wire_lag_baseline_max_samples", 2000
+    )
+    hygiene_dedupe_ttl_s = hygiene_section.get("dedupe_ttl_s", 30)
+    hygiene_log_interval_s = hygiene_section.get("log_interval_s", 10)
+    hygiene_future_venue_ts_grace_ms = hygiene_section.get("future_venue_ts_grace_ms", 250)
+    hygiene_connect_gate_s = hygiene_section.get("connect_gate_s", 0)
+    hygiene_connect_gate_max_excess_wire_lag_ms = hygiene_section.get(
+        "connect_gate_max_excess_wire_lag_ms",
+        hygiene_section.get("connect_gate_max_wire_lag_ms", 500),
+    )
+    hygiene_connect_gate_hard_max_wire_lag_ms = hygiene_section.get(
+        "connect_gate_hard_max_wire_lag_ms", 5000
+    )
+    hygiene_connect_gate_rearm_after_s = hygiene_section.get("connect_gate_rearm_after_s", 60)
     tui_min_width = runtime_section.get("tui_min_width", 41)
     tui_min_height = runtime_section.get("tui_min_height", 17)
     tui_max_width = runtime_section.get("tui_max_width", 81)
@@ -335,6 +432,134 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.size_scale_percentile must be between 0 and 1.")
     if effort_scale_min_samples <= 0:
         raise ValueError("runtime.effort_scale_min_samples must be > 0.")
+    if not isinstance(control_baseline_enabled, bool):
+        raise ValueError("runtime.control_baseline_enabled must be a boolean.")
+    if not isinstance(control_baseline_target_window_s, (int, float)):
+        raise ValueError("runtime.control_baseline_target_window_s must be a number.")
+    if float(control_baseline_target_window_s) <= 0:
+        raise ValueError("runtime.control_baseline_target_window_s must be > 0.")
+    if not isinstance(control_baseline_target_update_s, (int, float)):
+        raise ValueError("runtime.control_baseline_target_update_s must be a number.")
+    if float(control_baseline_target_update_s) <= 0:
+        raise ValueError("runtime.control_baseline_target_update_s must be > 0.")
+    if float(control_baseline_target_update_s) > float(control_baseline_target_window_s):
+        raise ValueError(
+            "runtime.control_baseline_target_update_s must be <= runtime.control_baseline_target_window_s."
+        )
+    if not isinstance(control_baseline_breakout_band, (int, float)):
+        raise ValueError("runtime.control_baseline_breakout_band must be a number.")
+    if float(control_baseline_breakout_band) < 0 or float(control_baseline_breakout_band) > 1:
+        raise ValueError("runtime.control_baseline_breakout_band must be between 0 and 1.")
+    if not isinstance(control_baseline_confirm_s, (int, float)):
+        raise ValueError("runtime.control_baseline_confirm_s must be a number.")
+    if float(control_baseline_confirm_s) <= 0:
+        raise ValueError("runtime.control_baseline_confirm_s must be > 0.")
+    if not isinstance(control_baseline_exit_band_frac, (int, float)):
+        raise ValueError("runtime.control_baseline_exit_band_frac must be a number.")
+    if float(control_baseline_exit_band_frac) <= 0 or float(control_baseline_exit_band_frac) >= 1:
+        raise ValueError("runtime.control_baseline_exit_band_frac must be between 0 and 1.")
+    if not isinstance(control_baseline_peg_half_life_s, (int, float)):
+        raise ValueError("runtime.control_baseline_peg_half_life_s must be a number.")
+    if float(control_baseline_peg_half_life_s) <= 0:
+        raise ValueError("runtime.control_baseline_peg_half_life_s must be > 0.")
+    if not isinstance(control_baseline_reanchor_half_life_s, (int, float)):
+        raise ValueError("runtime.control_baseline_reanchor_half_life_s must be a number.")
+    if float(control_baseline_reanchor_half_life_s) <= 0:
+        raise ValueError("runtime.control_baseline_reanchor_half_life_s must be > 0.")
+    if float(control_baseline_reanchor_half_life_s) > float(control_baseline_peg_half_life_s):
+        raise ValueError(
+            "runtime.control_baseline_reanchor_half_life_s must be <= runtime.control_baseline_peg_half_life_s."
+        )
+    if not isinstance(control_baseline_peg_deadband, (int, float)):
+        raise ValueError("runtime.control_baseline_peg_deadband must be a number.")
+    if float(control_baseline_peg_deadband) < 0 or float(control_baseline_peg_deadband) > 1:
+        raise ValueError("runtime.control_baseline_peg_deadband must be between 0 and 1.")
+    if control_baseline_max_window_samples is not None and (
+        not isinstance(control_baseline_max_window_samples, int)
+        or control_baseline_max_window_samples <= 0
+    ):
+        raise ValueError(
+            "runtime.control_baseline_max_window_samples must be a positive integer or omitted."
+        )
+    if not isinstance(control_baseline_center_suppress_band, (int, float)):
+        raise ValueError("runtime.control_baseline_center_suppress_band must be a number.")
+    if (
+        float(control_baseline_center_suppress_band) < 0
+        or float(control_baseline_center_suppress_band) > 1
+    ):
+        raise ValueError("runtime.control_baseline_center_suppress_band must be between 0 and 1.")
+    if not isinstance(control_baseline_line_hide_warmup_s, (int, float)):
+        raise ValueError("runtime.control_baseline_line_hide_warmup_s must be a number.")
+    if float(control_baseline_line_hide_warmup_s) < 0:
+        raise ValueError("runtime.control_baseline_line_hide_warmup_s must be >= 0.")
+    if not isinstance(control_baseline_midnight_tick_enabled, bool):
+        raise ValueError("runtime.control_baseline_midnight_tick_enabled must be a boolean.")
+    if not isinstance(control_baseline_midnight_tick_min_samples, int):
+        raise ValueError("runtime.control_baseline_midnight_tick_min_samples must be an integer.")
+    if control_baseline_midnight_tick_min_samples <= 0:
+        raise ValueError("runtime.control_baseline_midnight_tick_min_samples must be > 0.")
+    if not isinstance(control_baseline_midnight_tick_min_elapsed_s, (int, float)):
+        raise ValueError("runtime.control_baseline_midnight_tick_min_elapsed_s must be a number.")
+    if float(control_baseline_midnight_tick_min_elapsed_s) < 0:
+        raise ValueError("runtime.control_baseline_midnight_tick_min_elapsed_s must be >= 0.")
+    if not isinstance(hygiene_enabled, bool):
+        raise ValueError("runtime.hygiene.enabled must be a boolean.")
+    if not isinstance(hygiene_max_excess_wire_lag_ms, int):
+        raise ValueError("runtime.hygiene.max_excess_wire_lag_ms must be an integer.")
+    if hygiene_max_excess_wire_lag_ms <= 0:
+        raise ValueError("runtime.hygiene.max_excess_wire_lag_ms must be > 0.")
+    if not isinstance(hygiene_hard_max_wire_lag_ms, int):
+        raise ValueError("runtime.hygiene.hard_max_wire_lag_ms must be an integer.")
+    if hygiene_hard_max_wire_lag_ms <= 0:
+        raise ValueError("runtime.hygiene.hard_max_wire_lag_ms must be > 0.")
+    if not isinstance(hygiene_wire_lag_baseline_window_s, int):
+        raise ValueError("runtime.hygiene.wire_lag_baseline_window_s must be an integer.")
+    if hygiene_wire_lag_baseline_window_s <= 0:
+        raise ValueError("runtime.hygiene.wire_lag_baseline_window_s must be > 0.")
+    if not isinstance(hygiene_wire_lag_baseline_sample_interval_ms, int):
+        raise ValueError(
+            "runtime.hygiene.wire_lag_baseline_sample_interval_ms must be an integer."
+        )
+    if hygiene_wire_lag_baseline_sample_interval_ms <= 0:
+        raise ValueError("runtime.hygiene.wire_lag_baseline_sample_interval_ms must be > 0.")
+    if not isinstance(hygiene_wire_lag_baseline_min_samples, int):
+        raise ValueError("runtime.hygiene.wire_lag_baseline_min_samples must be an integer.")
+    if hygiene_wire_lag_baseline_min_samples <= 0:
+        raise ValueError("runtime.hygiene.wire_lag_baseline_min_samples must be > 0.")
+    if not isinstance(hygiene_wire_lag_baseline_max_samples, int):
+        raise ValueError("runtime.hygiene.wire_lag_baseline_max_samples must be an integer.")
+    if hygiene_wire_lag_baseline_max_samples <= 0:
+        raise ValueError("runtime.hygiene.wire_lag_baseline_max_samples must be > 0.")
+    if not isinstance(hygiene_dedupe_ttl_s, int):
+        raise ValueError("runtime.hygiene.dedupe_ttl_s must be an integer.")
+    if hygiene_dedupe_ttl_s <= 0:
+        raise ValueError("runtime.hygiene.dedupe_ttl_s must be > 0.")
+    if not isinstance(hygiene_log_interval_s, int):
+        raise ValueError("runtime.hygiene.log_interval_s must be an integer.")
+    if hygiene_log_interval_s <= 0:
+        raise ValueError("runtime.hygiene.log_interval_s must be > 0.")
+    if not isinstance(hygiene_future_venue_ts_grace_ms, int):
+        raise ValueError("runtime.hygiene.future_venue_ts_grace_ms must be an integer.")
+    if hygiene_future_venue_ts_grace_ms < 0:
+        raise ValueError("runtime.hygiene.future_venue_ts_grace_ms must be >= 0.")
+    if not isinstance(hygiene_connect_gate_s, int):
+        raise ValueError("runtime.hygiene.connect_gate_s must be an integer.")
+    if hygiene_connect_gate_s < 0:
+        raise ValueError("runtime.hygiene.connect_gate_s must be >= 0.")
+    if not isinstance(hygiene_connect_gate_max_excess_wire_lag_ms, int):
+        raise ValueError(
+            "runtime.hygiene.connect_gate_max_excess_wire_lag_ms must be an integer."
+        )
+    if hygiene_connect_gate_max_excess_wire_lag_ms <= 0:
+        raise ValueError("runtime.hygiene.connect_gate_max_excess_wire_lag_ms must be > 0.")
+    if not isinstance(hygiene_connect_gate_hard_max_wire_lag_ms, int):
+        raise ValueError("runtime.hygiene.connect_gate_hard_max_wire_lag_ms must be an integer.")
+    if hygiene_connect_gate_hard_max_wire_lag_ms <= 0:
+        raise ValueError("runtime.hygiene.connect_gate_hard_max_wire_lag_ms must be > 0.")
+    if not isinstance(hygiene_connect_gate_rearm_after_s, int):
+        raise ValueError("runtime.hygiene.connect_gate_rearm_after_s must be an integer.")
+    if hygiene_connect_gate_rearm_after_s < 0:
+        raise ValueError("runtime.hygiene.connect_gate_rearm_after_s must be >= 0.")
     if not isinstance(tui_min_width, int):
         raise ValueError("runtime.tui_min_width must be an integer.")
     if not isinstance(tui_min_height, int):
@@ -442,6 +667,47 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         effort_scale_percentile=float(effort_scale_percentile),
         effort_scale_min_samples=int(effort_scale_min_samples),
         size_scale_percentile=float(size_scale_percentile),
+        control_baseline_enabled=bool(control_baseline_enabled),
+        control_baseline_target_window_s=float(control_baseline_target_window_s),
+        control_baseline_target_update_s=float(control_baseline_target_update_s),
+        control_baseline_breakout_band=float(control_baseline_breakout_band),
+        control_baseline_confirm_s=float(control_baseline_confirm_s),
+        control_baseline_exit_band_frac=float(control_baseline_exit_band_frac),
+        control_baseline_peg_half_life_s=float(control_baseline_peg_half_life_s),
+        control_baseline_reanchor_half_life_s=float(control_baseline_reanchor_half_life_s),
+        control_baseline_peg_deadband=float(control_baseline_peg_deadband),
+        control_baseline_max_window_samples=(
+            int(control_baseline_max_window_samples)
+            if control_baseline_max_window_samples is not None
+            else None
+        ),
+        control_baseline_center_suppress_band=float(control_baseline_center_suppress_band),
+        control_baseline_line_hide_warmup_s=float(control_baseline_line_hide_warmup_s),
+        control_baseline_midnight_tick_enabled=bool(control_baseline_midnight_tick_enabled),
+        control_baseline_midnight_tick_min_samples=int(control_baseline_midnight_tick_min_samples),
+        control_baseline_midnight_tick_min_elapsed_s=float(
+            control_baseline_midnight_tick_min_elapsed_s
+        ),
+        hygiene_enabled=bool(hygiene_enabled),
+        hygiene_max_excess_wire_lag_ms=int(hygiene_max_excess_wire_lag_ms),
+        hygiene_hard_max_wire_lag_ms=int(hygiene_hard_max_wire_lag_ms),
+        hygiene_wire_lag_baseline_window_s=int(hygiene_wire_lag_baseline_window_s),
+        hygiene_wire_lag_baseline_sample_interval_ms=int(
+            hygiene_wire_lag_baseline_sample_interval_ms
+        ),
+        hygiene_wire_lag_baseline_min_samples=int(hygiene_wire_lag_baseline_min_samples),
+        hygiene_wire_lag_baseline_max_samples=int(hygiene_wire_lag_baseline_max_samples),
+        hygiene_dedupe_ttl_s=int(hygiene_dedupe_ttl_s),
+        hygiene_log_interval_s=int(hygiene_log_interval_s),
+        hygiene_future_venue_ts_grace_ms=int(hygiene_future_venue_ts_grace_ms),
+        hygiene_connect_gate_s=int(hygiene_connect_gate_s),
+        hygiene_connect_gate_max_excess_wire_lag_ms=int(
+            hygiene_connect_gate_max_excess_wire_lag_ms
+        ),
+        hygiene_connect_gate_hard_max_wire_lag_ms=int(
+            hygiene_connect_gate_hard_max_wire_lag_ms
+        ),
+        hygiene_connect_gate_rearm_after_s=int(hygiene_connect_gate_rearm_after_s),
         tui_min_width=int(tui_min_width),
         tui_min_height=int(tui_min_height),
         tui_max_width=int(tui_max_width),

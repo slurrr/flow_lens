@@ -46,6 +46,7 @@ For each trade print (or agg-trade) captured:
 - `market_type` (`spot` / `perp` / `futures`) — keep separate rankings
 - `symbol` (base, e.g. `BTC`, `SOL`)
 - `ts_exchange_ms` (exchange event timestamp)
+- `ts_venue_ms` (raw venue timestamp when available; may equal `ts_exchange_ms`; may be null)
 - `ts_recv_ms` (local receive timestamp)
 - `price` (quote in USD/USDT/USDC as captured; conversion handled separately)
 - `size` (base qty if available)
@@ -54,6 +55,12 @@ For each trade print (or agg-trade) captured:
 Notes:
 
 - Prefer exchange timestamps for alignment, but log `ts_recv_ms` to estimate jitter and detect skew.
+- **Stale-on-arrival hygiene (required for defensible results):**
+  - Some feeds send **recent-history snapshots** on subscribe/connection (notably Hyperliquid), which will otherwise be
+    mis-scored as if it arrived “now”.
+  - Define `wire_lag_ms = ts_recv_ms - (ts_venue_ms ?? ts_exchange_ms)`.
+  - Drop prints where `wire_lag_ms` exceeds a configured threshold during analysis (typical: `2000–5000ms`), and always
+    report per-venue drop counts alongside rankings.
 - Conversion: USD≈USDT≈USDC is acceptable for the *study bootstrap* if we also compute and report whether the
   approximation plausibly affects lead metrics (e.g., systematic basis drift should not appear at 0–4s horizons).
 
@@ -65,6 +72,10 @@ Build a robust per-venue price series by time-bucketing exchange timestamps:
 - per-bucket price: VWAP or last (VWAP preferred if size is available)
 
 All comparisons are done on this bucketed series, not raw ticks.
+
+Implementation note:
+
+- Apply stale-on-arrival filtering **before** bucketing so startup history bursts cannot pollute the time series.
 
 ---
 
@@ -237,9 +248,10 @@ Target sessions (what we care about):
 
 Operational note (important):
 
-- This scheduler is anchored at **16:00 MST**. If you start it at ~15:45–15:55 MST, it will sleep until 16:00 and then
-  run the full 24h plan.
-- Therefore, to capture a given day’s US windows (06:00–16:00 MST), you must start the scheduler the **prior afternoon**:
+- This scheduler is anchored at **22:00 MST** (default `--anchor-hhmm 22:00`). If you start it at ~21:45–21:55 MST, it
+  will sleep until 22:00 and then run the full 24h plan.
+- The block windows themselves start the following day (first block begins at 16:00 MST), so to capture a given day’s US
+  windows (06:00–16:00 MST), you must start the scheduler the **prior evening**:
   - Saturday start → Sunday US windows
   - Sunday start → Monday US windows
   - Tuesday start → Wednesday US windows
@@ -252,8 +264,8 @@ Run cadence:
 
 Scheduler start time (required):
 
-- Start the scheduler between **15:45–15:55 MST** so it can queue the first block at 16:00 MST.
-  - Run: `./.venv/bin/python scripts/venue_tournament_scheduler_24h.py --gzip`
+- Start the scheduler between **21:45–21:55 MST** so it can begin the pass at 22:00 MST (and capture the next day’s blocks).
+  - Run (recommended hygiene defaults, strict wire-lag cutoff): `./.venv/bin/python scripts/venue_tournament_scheduler_24h.py --gzip --analysis-drop-stale --analysis-max-wire-lag-ms 2000`
   - Preview schedule: `./.venv/bin/python scripts/venue_tournament_scheduler_24h.py --dry-run`
   - Default allowed start days are aligned to the mapping above: `sat,sun,tue,thu`
 
@@ -271,6 +283,10 @@ Notes:
 
 - This is intentionally “one-day extended”: it covers most of the US day plus the sessions that frequently seed it.
 - The Sunday run is for weekly boundary behavior. If forced to choose one day to never skip, prioritize Sunday.
+- Analysis should run in `deferred` mode (capture-first) unless you are intentionally testing small blocks. Inline analysis
+  can cause missed blocks if the workstation is busy.
+- Stale-on-arrival filtering during analysis is enabled by default in the scheduler; disable only for debugging
+  (`--no-analysis-drop-stale`), and treat calm-window changes as a hygiene warning when the ranking shifts.
 - Reference implementation: `scripts/venue_tournament_scheduler_24h.py` (runs the blocks + emits per-block all-up and
   hour-sliced reports into timestamped folders; no cleanup required).
 

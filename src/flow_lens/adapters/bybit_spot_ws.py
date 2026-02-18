@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import AsyncIterator, cast
 
 import websockets
 
 from flow_lens.adapters.base import AdapterEvent, BaseAdapter
+from flow_lens.adapters.time_utils import normalize_venue_timestamp_ms
 from flow_lens.models.event import AggressorSide, Event
 
 LOGGER = logging.getLogger(__name__)
@@ -54,9 +56,14 @@ class BybitSpotWSAdapter(BaseAdapter):
                         symbol = str(row.get("s", "")).upper()
                         if not symbol or not self.has_symbol(symbol):
                             continue
-                        timestamp = _parse_timestamp_ms(row.get("T"), envelope_ts)
-                        if timestamp is None:
-                            continue
+                        venue_ts_ms = (
+                            normalize_venue_timestamp_ms(row.get("T"))
+                            or normalize_venue_timestamp_ms(envelope_ts)
+                        )
+                        ts_recv_ms = self._clamp_recv_timestamp_ms(
+                            symbol,
+                            int(time.time_ns() // 1_000_000),
+                        )
                         side_value = str(row.get("S", "")).lower()
                         if side_value not in {"buy", "sell"}:
                             continue
@@ -68,14 +75,16 @@ class BybitSpotWSAdapter(BaseAdapter):
                         effort_value = price * size
                         aggressor_side = cast(AggressorSide, side_value)
                         event = Event(
-                            timestamp=timestamp,
+                            timestamp=ts_recv_ms,
                             source_id="bybit_spot",
                             side_type="spot",
                             aggressor_side=aggressor_side,
                             effort_value=effort_value,
                             price=price,
+                            venue_timestamp_ms=venue_ts_ms,
+                            trade_id=str(row.get("i")) if row.get("i") is not None else None,
                         )
-                        self._mark_event(symbol, timestamp)
+                        self._mark_event(symbol, ts_recv_ms)
                         emitted = True
                         yield AdapterEvent(
                             symbol=symbol,
@@ -85,15 +94,3 @@ class BybitSpotWSAdapter(BaseAdapter):
                     self._mark_message(dropped=not emitted)
             finally:
                 self._mark_disconnected()
-
-
-def _parse_timestamp_ms(value: object, fallback: object) -> int | None:
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    if isinstance(fallback, (int, float)):
-        return int(fallback)
-    if isinstance(fallback, str) and fallback.isdigit():
-        return int(fallback)
-    return None
