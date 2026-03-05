@@ -26,6 +26,9 @@ from flow_lens.adapters import (
     CoinbaseSpotWSAdapter,
 )
 from flow_lens.config import AppConfig, load_app_config
+from flow_lens.dist_state.engine import DistStateConfig, DistStateEngine
+from flow_lens.dist_state.feed import BinancePerpDistFeed, DistFeedConfig
+from flow_lens.dist_state.models import DistPanelSnapshot
 from flow_lens.engine.buffer import (
     PriceSourceMeta,
     PriceSwitchEvent,
@@ -315,6 +318,53 @@ def _run(
         )
     )
     live_metrics = LiveMetrics()
+    dist_engine: DistStateEngine | None = None
+    dist_feed: BinancePerpDistFeed | None = None
+    dist_snapshot: DistPanelSnapshot | None = None
+    if config.dist_state.enabled:
+        try:
+            dist_engine = DistStateEngine(
+                DistStateConfig(
+                    enabled=config.dist_state.enabled,
+                    symbol=config.dist_state.symbol,
+                    source_id=config.dist_state.source_id,
+                    timeframes=config.dist_state.timeframes,
+                    warmup_kline_bars=config.dist_state.warmup_kline_bars,
+                    warmup_oi_hist_points=config.dist_state.warmup_oi_hist_points,
+                    ready_core_min_bars=config.dist_state.ready_core_min_bars,
+                    ready_p_min_deltas=config.dist_state.ready_p_min_deltas,
+                    oi_join_tolerance_ms=config.dist_state.oi_join_tolerance_ms,
+                    oi_seed_points=config.dist_state.oi_seed_points,
+                    oi_seed_min_points=config.dist_state.oi_seed_min_points,
+                    v_scale_window_bars=config.dist_state.v_scale_window_bars,
+                    v_scale_percentile=config.dist_state.v_scale_percentile,
+                    v_scale_min_samples=config.dist_state.v_scale_min_samples,
+                    hl_vol_bars=config.dist_state.hl_vol_bars,
+                    hl_stretch_bars=config.dist_state.hl_stretch_bars,
+                    hl_oi_bars=config.dist_state.hl_oi_bars,
+                    hl_atr_short_bars=config.dist_state.hl_atr_short_bars,
+                    hl_atr_long_bars=config.dist_state.hl_atr_long_bars,
+                    hl_a_bars=config.dist_state.hl_a_bars,
+                    k_s=config.dist_state.k_s,
+                    k_p=config.dist_state.k_p,
+                    k_t=config.dist_state.k_t,
+                )
+            )
+            dist_engine.warmup()
+            dist_snapshot = dist_engine.snapshot()
+            dist_feed = BinancePerpDistFeed(
+                DistFeedConfig(
+                    symbol=config.dist_state.symbol,
+                    source_id=config.dist_state.source_id,
+                    timeframes=config.dist_state.timeframes,
+                )
+            )
+            dist_feed.start()
+        except Exception:
+            logging.exception("Failed to initialize dist-state layer; disabling panel.")
+            dist_engine = None
+            dist_feed = None
+            dist_snapshot = None
     diagnostics: DiagnosticLogger | None = None
     if diagnostics_enabled:
         diagnostics = DiagnosticLogger(
@@ -337,6 +387,9 @@ def _run(
             input_state.handle_key(key)
 
         _drain_events(queue_events, runtime)
+        if dist_feed is not None and dist_engine is not None:
+            for dist_event in dist_feed.drain():
+                dist_snapshot = dist_engine.on_kline_close(dist_event)
 
         now = time.monotonic()
         if now - last_update >= update_interval_s:
@@ -437,6 +490,7 @@ def _run(
                 stdscr,
                 symbol,
                 runtime.last_state.get(symbol),
+                dist_snapshot=dist_snapshot,
                 status_spot=status_spot,
                 status_perp=status_perp,
                 spot_stats=spot_stats,
@@ -1376,6 +1430,29 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "tui_frame_inset_px": config.tui_frame_inset_px,
         "tui_frame_band_inner": config.tui_frame_band_inner,
         "tui_frame_band_outer": config.tui_frame_band_outer,
+        "dist_state_enabled": config.dist_state.enabled,
+        "dist_state_symbol": config.dist_state.symbol,
+        "dist_state_source_id": config.dist_state.source_id,
+        "dist_state_timeframes": config.dist_state.timeframes,
+        "dist_state_warmup_kline_bars": config.dist_state.warmup_kline_bars,
+        "dist_state_warmup_oi_hist_points": config.dist_state.warmup_oi_hist_points,
+        "dist_state_ready_core_min_bars": config.dist_state.ready_core_min_bars,
+        "dist_state_ready_p_min_deltas": config.dist_state.ready_p_min_deltas,
+        "dist_state_oi_join_tolerance_ms": config.dist_state.oi_join_tolerance_ms,
+        "dist_state_oi_seed_points": config.dist_state.oi_seed_points,
+        "dist_state_oi_seed_min_points": config.dist_state.oi_seed_min_points,
+        "dist_state_v_scale_window_bars": config.dist_state.v_scale_window_bars,
+        "dist_state_v_scale_percentile": config.dist_state.v_scale_percentile,
+        "dist_state_v_scale_min_samples": config.dist_state.v_scale_min_samples,
+        "dist_state_hl_vol_bars": config.dist_state.hl_vol_bars,
+        "dist_state_hl_stretch_bars": config.dist_state.hl_stretch_bars,
+        "dist_state_hl_oi_bars": config.dist_state.hl_oi_bars,
+        "dist_state_hl_atr_short_bars": config.dist_state.hl_atr_short_bars,
+        "dist_state_hl_atr_long_bars": config.dist_state.hl_atr_long_bars,
+        "dist_state_hl_a_bars": config.dist_state.hl_a_bars,
+        "dist_state_k_s": config.dist_state.k_s,
+        "dist_state_k_p": config.dist_state.k_p,
+        "dist_state_k_t": config.dist_state.k_t,
         "source_registry": source_registry,
     }
 

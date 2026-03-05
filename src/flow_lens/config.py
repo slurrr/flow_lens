@@ -37,6 +37,33 @@ class SourceConfig:
 
 
 @dataclass(frozen=True)
+class DistStateRuntimeConfig:
+    enabled: bool
+    symbol: str
+    source_id: str
+    timeframes: tuple[Literal["3m", "15m", "1h", "4h"], ...]
+    warmup_kline_bars: int
+    warmup_oi_hist_points: int
+    ready_core_min_bars: int
+    ready_p_min_deltas: int
+    oi_join_tolerance_ms: int
+    oi_seed_points: int
+    oi_seed_min_points: int
+    v_scale_window_bars: int
+    v_scale_percentile: float
+    v_scale_min_samples: int
+    hl_vol_bars: float
+    hl_stretch_bars: float
+    hl_oi_bars: float
+    hl_atr_short_bars: float
+    hl_atr_long_bars: float
+    hl_a_bars: float
+    k_s: float
+    k_p: float
+    k_t: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     adapters: Mapping[str, AdapterConfig]
     sources: Mapping[str, SourceConfig]
@@ -125,6 +152,7 @@ class AppConfig:
     tui_frame_inset_px: int
     tui_frame_band_inner: float
     tui_frame_band_outer: float
+    dist_state: DistStateRuntimeConfig
 
 
 def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
@@ -275,6 +303,35 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     tui_frame_inset_px = runtime_section.get("tui_frame_inset_px", 1)
     tui_frame_band_inner = runtime_section.get("tui_frame_band_inner", 0.995)
     tui_frame_band_outer = runtime_section.get("tui_frame_band_outer", 1.005)
+    dist_state_section = runtime_section.get("dist_state", {})
+    if not isinstance(dist_state_section, dict):
+        raise ValueError("runtime.dist_state must be a table.")
+    dist_state_enabled = dist_state_section.get("enabled", False)
+    dist_state_symbol = dist_state_section.get("symbol", "BTC")
+    dist_state_source_id = dist_state_section.get("source_id", "binance_perp")
+    dist_state_timeframes = dist_state_section.get("timeframes", ["3m", "15m", "1h", "4h"])
+    dist_state_warmup_kline_bars = dist_state_section.get("warmup_kline_bars", 200)
+    dist_state_warmup_oi_hist_points = dist_state_section.get("warmup_oi_hist_points", 200)
+    dist_state_ready_core_min_bars = dist_state_section.get("ready_core_min_bars", 30)
+    dist_state_ready_p_min_deltas = dist_state_section.get("ready_p_min_deltas", 10)
+    dist_state_oi_join_tolerance_ms = dist_state_section.get("oi_join_tolerance_ms", 15_000)
+    dist_state_oi_seed_points = dist_state_section.get(
+        "oi_seed_points",
+        dist_state_warmup_oi_hist_points,
+    )
+    dist_state_oi_seed_min_points = dist_state_section.get("oi_seed_min_points", 30)
+    dist_state_v_scale_window_bars = dist_state_section.get("v_scale_window_bars", 200)
+    dist_state_v_scale_percentile = dist_state_section.get("v_scale_percentile", 0.80)
+    dist_state_v_scale_min_samples = dist_state_section.get("v_scale_min_samples", 30)
+    dist_state_hl_vol_bars = dist_state_section.get("hl_vol_bars", 20.0)
+    dist_state_hl_stretch_bars = dist_state_section.get("hl_stretch_bars", 20.0)
+    dist_state_hl_oi_bars = dist_state_section.get("hl_oi_bars", 20.0)
+    dist_state_hl_atr_short_bars = dist_state_section.get("hl_atr_short_bars", 10.0)
+    dist_state_hl_atr_long_bars = dist_state_section.get("hl_atr_long_bars", 40.0)
+    dist_state_hl_a_bars = dist_state_section.get("hl_a_bars", 20.0)
+    dist_state_k_s = dist_state_section.get("k_s", 0.6)
+    dist_state_k_p = dist_state_section.get("k_p", 0.6)
+    dist_state_k_t = dist_state_section.get("k_t", 1.0)
     if not isinstance(tbt_window_multiplier, (int, float)):
         raise ValueError("runtime.tbt_window_multiplier must be a number.")
     if not isinstance(update_window_seconds, (int, float)):
@@ -588,6 +645,67 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.tui_frame_band_inner must be > 0.")
     if float(tui_frame_band_outer) <= float(tui_frame_band_inner):
         raise ValueError("runtime.tui_frame_band_outer must be > runtime.tui_frame_band_inner.")
+    if not isinstance(dist_state_enabled, bool):
+        raise ValueError("runtime.dist_state.enabled must be a boolean.")
+    if not isinstance(dist_state_symbol, str) or not dist_state_symbol.strip():
+        raise ValueError("runtime.dist_state.symbol must be a non-empty string.")
+    if not isinstance(dist_state_source_id, str) or not dist_state_source_id.strip():
+        raise ValueError("runtime.dist_state.source_id must be a non-empty string.")
+    if not isinstance(dist_state_timeframes, list) or not dist_state_timeframes:
+        raise ValueError("runtime.dist_state.timeframes must be a non-empty list.")
+    allowed_timeframes = {"3m", "15m", "1h", "4h"}
+    parsed_timeframes: list[Literal["3m", "15m", "1h", "4h"]] = []
+    for timeframe in dist_state_timeframes:
+        if not isinstance(timeframe, str) or timeframe not in allowed_timeframes:
+            raise ValueError("runtime.dist_state.timeframes must only include 3m, 15m, 1h, 4h.")
+        parsed_timeframes.append(cast(Literal["3m", "15m", "1h", "4h"], timeframe))
+    if len(set(parsed_timeframes)) != len(parsed_timeframes):
+        raise ValueError("runtime.dist_state.timeframes must not contain duplicates.")
+    if not isinstance(dist_state_warmup_kline_bars, int) or dist_state_warmup_kline_bars <= 0:
+        raise ValueError("runtime.dist_state.warmup_kline_bars must be > 0.")
+    if (
+        not isinstance(dist_state_warmup_oi_hist_points, int)
+        or dist_state_warmup_oi_hist_points <= 0
+    ):
+        raise ValueError("runtime.dist_state.warmup_oi_hist_points must be > 0.")
+    if not isinstance(dist_state_ready_core_min_bars, int) or dist_state_ready_core_min_bars <= 0:
+        raise ValueError("runtime.dist_state.ready_core_min_bars must be > 0.")
+    if not isinstance(dist_state_ready_p_min_deltas, int) or dist_state_ready_p_min_deltas <= 0:
+        raise ValueError("runtime.dist_state.ready_p_min_deltas must be > 0.")
+    if not isinstance(dist_state_oi_join_tolerance_ms, int) or dist_state_oi_join_tolerance_ms <= 0:
+        raise ValueError("runtime.dist_state.oi_join_tolerance_ms must be > 0.")
+    if not isinstance(dist_state_oi_seed_points, int) or dist_state_oi_seed_points <= 0:
+        raise ValueError("runtime.dist_state.oi_seed_points must be > 0.")
+    if not isinstance(dist_state_oi_seed_min_points, int) or dist_state_oi_seed_min_points <= 0:
+        raise ValueError("runtime.dist_state.oi_seed_min_points must be > 0.")
+    if (
+        not isinstance(dist_state_v_scale_window_bars, int)
+        or dist_state_v_scale_window_bars <= 0
+    ):
+        raise ValueError("runtime.dist_state.v_scale_window_bars must be > 0.")
+    if not isinstance(dist_state_v_scale_percentile, (int, float)):
+        raise ValueError("runtime.dist_state.v_scale_percentile must be a number.")
+    if not (0.0 < float(dist_state_v_scale_percentile) < 1.0):
+        raise ValueError("runtime.dist_state.v_scale_percentile must be between 0 and 1.")
+    if not isinstance(dist_state_v_scale_min_samples, int) or dist_state_v_scale_min_samples <= 0:
+        raise ValueError("runtime.dist_state.v_scale_min_samples must be > 0.")
+    for field_name, value in (
+        ("hl_vol_bars", dist_state_hl_vol_bars),
+        ("hl_stretch_bars", dist_state_hl_stretch_bars),
+        ("hl_oi_bars", dist_state_hl_oi_bars),
+        ("hl_atr_short_bars", dist_state_hl_atr_short_bars),
+        ("hl_atr_long_bars", dist_state_hl_atr_long_bars),
+        ("hl_a_bars", dist_state_hl_a_bars),
+        ("k_s", dist_state_k_s),
+        ("k_p", dist_state_k_p),
+        ("k_t", dist_state_k_t),
+    ):
+        if not isinstance(value, (int, float)) or float(value) <= 0:
+            raise ValueError(f"runtime.dist_state.{field_name} must be > 0.")
+    if dist_state_oi_seed_min_points > dist_state_oi_seed_points:
+        raise ValueError(
+            "runtime.dist_state.oi_seed_min_points must be <= runtime.dist_state.oi_seed_points."
+        )
 
     dot_thresholds = _parse_thresholds(
         binning_dot_size_thresholds, "runtime.binning_dot_size_thresholds"
@@ -718,6 +836,31 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         tui_frame_inset_px=int(tui_frame_inset_px),
         tui_frame_band_inner=float(tui_frame_band_inner),
         tui_frame_band_outer=float(tui_frame_band_outer),
+        dist_state=DistStateRuntimeConfig(
+            enabled=bool(dist_state_enabled),
+            symbol=normalize_symbol(dist_state_symbol),
+            source_id=dist_state_source_id.strip(),
+            timeframes=tuple(parsed_timeframes),
+            warmup_kline_bars=int(dist_state_warmup_kline_bars),
+            warmup_oi_hist_points=int(dist_state_warmup_oi_hist_points),
+            ready_core_min_bars=int(dist_state_ready_core_min_bars),
+            ready_p_min_deltas=int(dist_state_ready_p_min_deltas),
+            oi_join_tolerance_ms=int(dist_state_oi_join_tolerance_ms),
+            oi_seed_points=int(dist_state_oi_seed_points),
+            oi_seed_min_points=int(dist_state_oi_seed_min_points),
+            v_scale_window_bars=int(dist_state_v_scale_window_bars),
+            v_scale_percentile=float(dist_state_v_scale_percentile),
+            v_scale_min_samples=int(dist_state_v_scale_min_samples),
+            hl_vol_bars=float(dist_state_hl_vol_bars),
+            hl_stretch_bars=float(dist_state_hl_stretch_bars),
+            hl_oi_bars=float(dist_state_hl_oi_bars),
+            hl_atr_short_bars=float(dist_state_hl_atr_short_bars),
+            hl_atr_long_bars=float(dist_state_hl_atr_long_bars),
+            hl_a_bars=float(dist_state_hl_a_bars),
+            k_s=float(dist_state_k_s),
+            k_p=float(dist_state_k_p),
+            k_t=float(dist_state_k_t),
+        ),
     )
 
 

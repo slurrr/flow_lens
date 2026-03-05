@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from flow_lens.adapters.base import AdapterStats, AdapterStatus
+from flow_lens.dist_state.models import DistPanelSnapshot, DistRowSnapshot, DistTimeframe
 from flow_lens.engine.state_engine import StateSnapshot
 from flow_lens.tui.metrics import LiveMetricsSnapshot
 
@@ -55,6 +56,7 @@ class Renderer:
         symbol: str,
         state: StateSnapshot | None,
         *,
+        dist_snapshot: DistPanelSnapshot | None = None,
         status_spot: AdapterStatus | None = None,
         status_perp: AdapterStatus | None = None,
         spot_stats: AdapterStats | None = None,
@@ -191,7 +193,7 @@ class Renderer:
             axis_flash_sign=self._axis_flash_sign if self._axis_flash_active() else 0,
         )
 
-        self._draw_status_bar(
+        status_bottom = self._draw_status_bar(
             stdscr,
             spot_stats=spot_stats,
             perp_stats=perp_stats,
@@ -201,6 +203,15 @@ class Renderer:
             map_left=map_left,
             map_right=map_right,
             map_bottom=map_bottom,
+            maxy=maxy,
+            maxx=maxx,
+        )
+        self._draw_dist_panel(
+            stdscr,
+            dist_snapshot=dist_snapshot,
+            map_left=map_left,
+            map_right=map_right,
+            status_bottom=status_bottom,
             maxy=maxy,
             maxx=maxx,
         )
@@ -233,7 +244,7 @@ class Renderer:
         map_bottom: int,
         maxy: int,
         maxx: int,
-    ) -> None:
+    ) -> int:
         lines = _status_lines(
             metrics,
             state,
@@ -243,14 +254,14 @@ class Renderer:
         )
         top = map_bottom + 4
         if not lines:
-            return
+            return top - 1
         inner_width = min(max(len(line) for line in lines), maxx - 2)
         if inner_width <= 0:
-            return
+            return top - 1
         box_height = len(lines) + 2
         bottom = top + box_height - 1
         if bottom >= maxy:
-            return
+            return top - 1
         x0 = min(max(0, map_left), maxx - (inner_width + 2))
         if x0 < 0:
             x0 = 0
@@ -261,6 +272,68 @@ class Renderer:
             _addstr_limited(
                 stdscr, top + idx, x0 + 1, line, x0 + 1 + inner_width
             )
+            _safe_addstr(stdscr, top + idx, x0 + inner_width + 1, "│")
+        _safe_addstr(stdscr, bottom, x0, "└" + "─" * inner_width + "┘")
+        return bottom
+
+    def _draw_dist_panel(
+        self,
+        stdscr: CursesWindow,
+        *,
+        dist_snapshot: DistPanelSnapshot | None,
+        map_left: int,
+        map_right: int,
+        status_bottom: int,
+        maxy: int,
+        maxx: int,
+    ) -> None:
+        if dist_snapshot is None:
+            return
+        rows: list[DistRowSnapshot] = []
+        ordered_tfs: tuple[DistTimeframe, ...] = ("3m", "15m", "1h", "4h")
+        for tf in ordered_tfs:
+            row = dist_snapshot.rows.get(tf)
+            if row is not None:
+                rows.append(row)
+        if not rows:
+            return
+
+        # If vertical space is tight: drop 4h -> 1h -> 3m, keep 15m last.
+        drop_order = ["4h", "1h", "3m"]
+        top = status_bottom + 2
+        min_box_height = 4
+        while rows and top + min_box_height + len(rows) - 1 >= maxy:
+            dropped = False
+            for tf in drop_order:
+                idx = next((i for i, row in enumerate(rows) if row.tf == tf), None)
+                if idx is not None:
+                    rows.pop(idx)
+                    dropped = True
+                    break
+            if not dropped:
+                rows.pop()
+        if not rows:
+            return
+
+        header = f"DIST {dist_snapshot.symbol} ({dist_snapshot.source_id})"
+        line_rows = [header, "TF  RC RP  V  S  A  P  T"]
+        for row in rows:
+            line_rows.append(_format_dist_row(row))
+
+        inner_width = min(max(len(line) for line in line_rows), maxx - 2)
+        if inner_width <= 0:
+            return
+        box_height = len(line_rows) + 2
+        bottom = top + box_height - 1
+        if bottom >= maxy:
+            return
+        x0 = min(max(0, map_left), maxx - (inner_width + 2))
+        x0 = min(x0, max(0, map_right - inner_width))
+
+        _safe_addstr(stdscr, top, x0, "┌" + "─" * inner_width + "┐")
+        for idx, line in enumerate(line_rows, start=1):
+            _safe_addstr(stdscr, top + idx, x0, "│")
+            _addstr_limited(stdscr, top + idx, x0 + 1, line, x0 + 1 + inner_width)
             _safe_addstr(stdscr, top + idx, x0 + inner_width + 1, "│")
         _safe_addstr(stdscr, bottom, x0, "└" + "─" * inner_width + "┘")
 
@@ -715,6 +788,26 @@ def _status_lines(
     )
     line_feeds = f"{feeds_left}".ljust(col_width) + feeds_right
     return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp, line_control_baseline]
+
+
+def _format_dist_row(row: DistRowSnapshot) -> str:
+    core = "Y" if row.ready_core else "N"
+    ready_p = "Y" if row.ready_p else "N"
+    return (
+        f"{row.tf:<3}  {core}  {ready_p}  "
+        f"{_dist_bin_glyph(row.bins.v)}  "
+        f"{_dist_bin_glyph(row.bins.s)}  "
+        f"{_dist_bin_glyph(row.bins.a)}  "
+        f"{_dist_bin_glyph(row.bins.p)}  "
+        f"{_dist_bin_glyph(row.bins.t)}"
+    )
+
+
+def _dist_bin_glyph(value: int | None) -> str:
+    if value is None:
+        return "·"
+    palette = "0123456"
+    return palette[_clamp(value, 0, len(palette) - 1)]
 
 
 def _fmt_float(value: float | None, digits: int) -> str:

@@ -237,7 +237,7 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         if line.startswith("[") and line.endswith("]"):
             current_section = line[1:-1].strip()
             continue
-        if current_section not in {"runtime", "runtime.hygiene"}:
+        if current_section not in {"runtime", "runtime.hygiene", "runtime.dist_state"}:
             continue
         if "=" not in line:
             continue
@@ -329,6 +329,29 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "tui_frame_inset_px",
         "tui_frame_band_inner",
         "tui_frame_band_outer",
+        "dist_state_enabled",
+        "dist_state_symbol",
+        "dist_state_source_id",
+        "dist_state_timeframes",
+        "dist_state_warmup_kline_bars",
+        "dist_state_warmup_oi_hist_points",
+        "dist_state_ready_core_min_bars",
+        "dist_state_ready_p_min_deltas",
+        "dist_state_oi_join_tolerance_ms",
+        "dist_state_oi_seed_points",
+        "dist_state_oi_seed_min_points",
+        "dist_state_v_scale_window_bars",
+        "dist_state_v_scale_percentile",
+        "dist_state_v_scale_min_samples",
+        "dist_state_hl_vol_bars",
+        "dist_state_hl_stretch_bars",
+        "dist_state_hl_oi_bars",
+        "dist_state_hl_atr_short_bars",
+        "dist_state_hl_atr_long_bars",
+        "dist_state_hl_a_bars",
+        "dist_state_k_s",
+        "dist_state_k_p",
+        "dist_state_k_t",
     ]
     return {key: runtime[key] for key in ordered_keys if key in runtime}
 
