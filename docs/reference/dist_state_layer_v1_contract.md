@@ -10,6 +10,7 @@ This captures the v1 scope contracts agreed during planning, so later specs can 
 
 Primary spec: `SPEC-dist-state-layer-phase1.md`
 Primary decision: `docs/decisions/FL-0069-distribution-state-layer-v1.md`
+OI/P decision: `docs/decisions/FL-0070-open-interest-sampling-contract.md`
 
 ## 1) Perp-coherent rows (required)
 
@@ -22,7 +23,13 @@ Each timeframe row is computed from a **single perp source** such that:
 are all sourced from the **same perp instrument family** (same venue/instrument mapping rules).
 
 If a required input is missing or cannot be aligned to the bar close, the affected metric is **unavailable** for that row
-(no “best effort” substitution).
+(no “best effort” substitution), except where an explicit mode contract overrides this behavior.
+
+For `P`, `FL-0070` is the controlling contract:
+
+- `strict` mode: alignment/quality failures produce unavailable `P` with explicit reason codes.
+- `continuous` mode: no semantic fallbacks; still fail-closed when tolerance cannot be met. The goal is to make misses
+  operationally rare by improving sampling/verification.
 
 ## 2) Single source only (v1 scope)
 
@@ -41,8 +48,11 @@ Selector/failover is explicitly deferred to a later phase.
 Contractual requirements:
 
 - **Availability must be explicit**:
-  - `P` is available only when OI inputs required by the chosen formulation are present and aligned.
-  - before warmup or when OI is missing, `P` is shown as unavailable (never imputed).
+  - v1 rollout uses explicit modes (see `FL-0070`):
+    - validation: strict missingness allowed to expose gaps,
+    - production target: `P` computed on every close under normal operation (tolerance met); otherwise missing (no
+      guessing).
+  - OI quality must be exposed via diagnostics in both modes.
 - **Normalization must be explicit and bounded**:
   - `P` must be expressed as a dimensionless, bounded value suitable for stable binning/glyph rendering.
   - the normalization must be per-row/per-symbol (no cross-symbol scoring).

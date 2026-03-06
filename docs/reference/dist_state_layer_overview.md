@@ -62,6 +62,10 @@ The plan suggests mapping each row’s five metrics into a **small token set** f
 
 Important guardrail: tokens are **not** free-form text; they are a small deterministic vocabulary.
 
+V1 token vocabulary + deterministic mapping rules are captured in:
+
+- `docs/decisions/FL-0071-dist-state-row-tokens-v1.md`
+
 Proposed structural token set (per timeframe row):
 
 - `COMP` — compression

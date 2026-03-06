@@ -4,6 +4,17 @@ from dataclasses import dataclass
 from typing import Literal
 
 DistTimeframe = Literal["3m", "15m", "1h", "4h"]
+DistAvailabilityMode = Literal["strict", "continuous"]
+DistTimeMissingPolicy = Literal["reject"]
+DistRowToken = Literal["COMP", "EXP", "CONT↑", "CONT↓", "EXH↑", "EXH↓", "REVERT", "NEUT"]
+
+
+@dataclass(frozen=True)
+class DistOiSamplerSnapshot:
+    oi: float
+    venue_time_ms: int | None
+    ts_recv_ms: int
+    sample_seq: int
 
 
 @dataclass(frozen=True)
@@ -18,6 +29,8 @@ class DistKlineCloseEvent:
     high: float
     low: float
     close: float
+    sampler_snapshot: DistOiSamplerSnapshot | None = None
+    verify_snapshot: DistOiSamplerSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -67,3 +80,4 @@ class DistPanelSnapshot:
     rows: dict[DistTimeframe, DistRowSnapshot]
     last_oi_ts_recv_ms: int | None
     last_oi_value: float | None
+    tokens_enabled: bool = False

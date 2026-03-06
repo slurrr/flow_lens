@@ -138,17 +138,19 @@ This provides a stepwise funding rate stream suitable for optional funding-deriv
 
 ## 4) Overhead / rate-limit considerations (v1 intuition)
 
-For a single symbol (`BTC`) and four timeframes (`3m/15m/1h/4h`), a low-bloat approach is:
+For a single symbol (`BTC`) and four timeframes (`3m/15m/1h/4h`), v1 is intentionally simple:
 
 - one WebSocket connection multiplexing:
   - `kline_3m`, `kline_15m`, `kline_1h`, `kline_4h`, and optionally `markPrice@1s`
-- REST `openInterest` sampled on each **3m bar close**
-  - because `15m/1h/4h` closes are also on `3m` boundaries, this sample cadence is sufficient to align OI to all rows
-    (within the same close tick), without increasing REST call frequency.
+- REST `openInterest` sampled **continuously** (see `docs/decisions/FL-0070-open-interest-sampling-contract.md`)
+  - continuous sampling is TF-agnostic and avoids “OI join” failure modes.
+  - optional additional “verify fetch” at each kline close is recommended for tuning/diagnostics.
 
-This yields roughly:
+Call rate is therefore configurable:
 
-- ~20 `openInterest` REST calls per hour (one per 3m close), plus a handful of warmup calls on startup.
+- continuous sampler: `3600_000 / oi_poll_interval_ms` calls/hour
+- close verifier (if enabled): one call per processed close (`~20/hour` for 3m, plus ~4/hour for 15m, ~1/hour for 1h,
+  ~0.25/hour for 4h; small)
 
-This should be negligible compared to existing multi-symbol trade streams.
-
+Rate limits should be treated as an operational constraint: if HTTP errors rise, the sampler must back off while keeping
+`P` continuous (quality diagnostics will show staleness/offset).

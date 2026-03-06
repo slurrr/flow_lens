@@ -139,9 +139,29 @@ These are not commitments—just clean cut-lines that keep the layer reviewable.
   - OI history vs OI snapshot,
   - funding update mechanisms.
 - Missing-data semantics:
-  - what does “P unavailable” mean for token translation?
+  - v1 `P` is continuous (see `FL-0070`); what does “degraded OI quality” mean for token translation?
 - Replay + diagnostics strategy:
   - whether dist-state participates in existing replay harness or ships with its own minimal replay feed.
+
+## K) Future note: `P` delta variants (non-binding)
+
+Current v1 (`SPEC-dist-state-layer-phase1.md`) uses absolute OI deltas in contract units:
+
+- `ΔOI = OI_t - OI_{t-1}`
+- normalize via EWMA variance on `ΔOI` and compute `P` from the resulting z-score (then bound).
+
+Possible future variants (not for v1 unless a decision record changes the spec):
+
+- Relative delta:
+  - `ΔOI_rel = (OI_t - OI_{t-1}) / OI_{t-1}`
+  - normalize via EWMA variance on `ΔOI_rel`.
+  - pros: more invariant to slow OI level drift.
+  - cons: denominator edge cases; can amplify noise when OI is small (less relevant for BTC, still a semantic change).
+- Log delta (often preferred if switching to “relative”):
+  - `dOI = ln(OI_t / OI_{t-1})` (requires `OI > 0`)
+  - normalize via EWMA variance on `dOI`.
+  - pros: symmetric for up/down changes, numerically stable vs raw ratio, cleanly dimensionless.
+  - cons: still a semantic change vs “unusual raw contract change”.
 
 ## J) Binance v1 input reality check (probed)
 

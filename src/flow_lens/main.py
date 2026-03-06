@@ -28,7 +28,7 @@ from flow_lens.adapters import (
 from flow_lens.config import AppConfig, load_app_config
 from flow_lens.dist_state.engine import DistStateConfig, DistStateEngine
 from flow_lens.dist_state.feed import BinancePerpDistFeed, DistFeedConfig
-from flow_lens.dist_state.models import DistPanelSnapshot
+from flow_lens.dist_state.models import DistKlineCloseEvent, DistPanelSnapshot
 from flow_lens.engine.buffer import (
     PriceSourceMeta,
     PriceSwitchEvent,
@@ -102,6 +102,11 @@ def main() -> None:
         help="Enable diagnostics logging to JSONL.",
     )
     parser.add_argument(
+        "--dist-dia",
+        action="store_true",
+        help="Enable dist-state diagnostics logging to JSONL.",
+    )
+    parser.add_argument(
         "--config",
         default="config/app.toml",
         help="Path to app config (default: config/app.toml).",
@@ -114,13 +119,21 @@ def main() -> None:
     args = parser.parse_args()
     if args.fault:
         _enable_fault_handler()
-    curses.wrapper(partial(_run, diagnostics_enabled=args.dia, config_path=args.config))
+    curses.wrapper(
+        partial(
+            _run,
+            diagnostics_enabled=args.dia,
+            dist_diagnostics_enabled=args.dist_dia,
+            config_path=args.config,
+        )
+    )
 
 
 def _run(
     stdscr: "curses.window",
     *,
     diagnostics_enabled: bool,
+    dist_diagnostics_enabled: bool,
     config_path: str,
 ) -> None:
     stdscr.nodelay(True)
@@ -333,7 +346,9 @@ def _run(
                     warmup_oi_hist_points=config.dist_state.warmup_oi_hist_points,
                     ready_core_min_bars=config.dist_state.ready_core_min_bars,
                     ready_p_min_deltas=config.dist_state.ready_p_min_deltas,
-                    oi_join_tolerance_ms=config.dist_state.oi_join_tolerance_ms,
+                    p_availability_mode=config.dist_state.p_availability_mode,
+                    oi_tolerance_ms=config.dist_state.oi_tolerance_ms,
+                    oi_time_missing_policy=config.dist_state.oi_time_missing_policy,
                     oi_seed_points=config.dist_state.oi_seed_points,
                     oi_seed_min_points=config.dist_state.oi_seed_min_points,
                     v_scale_window_bars=config.dist_state.v_scale_window_bars,
@@ -348,6 +363,42 @@ def _run(
                     k_s=config.dist_state.k_s,
                     k_p=config.dist_state.k_p,
                     k_t=config.dist_state.k_t,
+                    tokens_enabled=config.dist_state.tokens_enabled,
+                    tokens_fail_fast_unknown=config.dist_state.tokens_fail_fast_unknown,
+                    s_dir_deadband=config.dist_state.s_dir_deadband,
+                    s_ext_enter=config.dist_state.s_ext_enter,
+                    s_ext_exit=config.dist_state.s_ext_exit,
+                    s_revert_min_stretch=config.dist_state.s_revert_min_stretch,
+                    t_exp_enter=config.dist_state.t_exp_enter,
+                    t_exp_exit=config.dist_state.t_exp_exit,
+                    t_comp_enter=config.dist_state.t_comp_enter,
+                    t_comp_exit=config.dist_state.t_comp_exit,
+                    a_cont_enter=config.dist_state.a_cont_enter,
+                    a_cont_exit=config.dist_state.a_cont_exit,
+                    a_revert_enter=config.dist_state.a_revert_enter,
+                    a_revert_exit=config.dist_state.a_revert_exit,
+                    v_low_threshold=config.dist_state.v_low_threshold,
+                    t_rise_threshold=config.dist_state.t_rise_threshold,
+                    s_neut_max=config.dist_state.s_neut_max,
+                    a_neut_max=config.dist_state.a_neut_max,
+                    t_neut_max=config.dist_state.t_neut_max,
+                    v_neut_min=config.dist_state.v_neut_min,
+                    v_neut_max=config.dist_state.v_neut_max,
+                    t_exp_plus=config.dist_state.t_exp_plus,
+                    t_exp_plus_plus=config.dist_state.t_exp_plus_plus,
+                    t_comp_plus=config.dist_state.t_comp_plus,
+                    t_comp_plus_plus=config.dist_state.t_comp_plus_plus,
+                    a_cont_plus=config.dist_state.a_cont_plus,
+                    a_cont_plus_plus=config.dist_state.a_cont_plus_plus,
+                    a_revert_plus=config.dist_state.a_revert_plus,
+                    a_revert_plus_plus=config.dist_state.a_revert_plus_plus,
+                    s_exh_plus=config.dist_state.s_exh_plus,
+                    s_exh_plus_plus=config.dist_state.s_exh_plus_plus,
+                    p_confirm_threshold=config.dist_state.p_confirm_threshold,
+                    token_min_hold_bars_3m=config.dist_state.token_min_hold_bars_3m,
+                    token_min_hold_bars_15m=config.dist_state.token_min_hold_bars_15m,
+                    token_min_hold_bars_1h=config.dist_state.token_min_hold_bars_1h,
+                    token_min_hold_bars_4h=config.dist_state.token_min_hold_bars_4h,
                 )
             )
             dist_engine.warmup()
@@ -357,6 +408,11 @@ def _run(
                     symbol=config.dist_state.symbol,
                     source_id=config.dist_state.source_id,
                     timeframes=config.dist_state.timeframes,
+                    oi_poll_interval_ms=config.dist_state.oi_poll_interval_ms,
+                    oi_verify_enabled=config.dist_state.oi_verify_enabled,
+                    oi_verify_timeframes=config.dist_state.oi_verify_timeframes,
+                    oi_verify_timeout_ms=config.dist_state.oi_verify_timeout_ms,
+                    oi_verify_max_rate_per_min=config.dist_state.oi_verify_max_rate_per_min,
                 )
             )
             dist_feed.start()
@@ -373,6 +429,77 @@ def _run(
             tanh_k=config.tanh_k,
             config=_runtime_config_map(config),
         )
+    dist_diagnostics: DistStateDiagnosticLogger | None = None
+    if dist_diagnostics_enabled:
+        if config.dist_state.enabled:
+            dist_diagnostics = DistStateDiagnosticLogger(
+                path=Path("docs/diagnostics/dist_state_diagnostics.jsonl"),
+                config={
+                    "dist_state_enabled": config.dist_state.enabled,
+                    "dist_state_symbol": config.dist_state.symbol,
+                    "dist_state_source_id": config.dist_state.source_id,
+                    "dist_state_timeframes": list(config.dist_state.timeframes),
+                    "dist_state_p_availability_mode": config.dist_state.p_availability_mode,
+                    "dist_state_oi_poll_interval_ms": config.dist_state.oi_poll_interval_ms,
+                    "dist_state_oi_tolerance_ms": config.dist_state.oi_tolerance_ms,
+                    "dist_state_oi_time_missing_policy": config.dist_state.oi_time_missing_policy,
+                    "dist_state_oi_verify_enabled": config.dist_state.oi_verify_enabled,
+                    "dist_state_oi_verify_timeframes": list(config.dist_state.oi_verify_timeframes),
+                    "dist_state_oi_verify_timeout_ms": config.dist_state.oi_verify_timeout_ms,
+                    "dist_state_oi_verify_max_rate_per_min": (
+                        config.dist_state.oi_verify_max_rate_per_min
+                    ),
+                    "dist_state_oi_quality_window_ms": config.dist_state.oi_quality_window_ms,
+                    "dist_state_tokens_enabled": config.dist_state.tokens_enabled,
+                    "dist_state_tokens_fail_fast_unknown": (
+                        config.dist_state.tokens_fail_fast_unknown
+                    ),
+                    "dist_state_s_dir_deadband": config.dist_state.s_dir_deadband,
+                    "dist_state_s_ext_enter": config.dist_state.s_ext_enter,
+                    "dist_state_s_ext_exit": config.dist_state.s_ext_exit,
+                    "dist_state_s_revert_min_stretch": config.dist_state.s_revert_min_stretch,
+                    "dist_state_t_exp_enter": config.dist_state.t_exp_enter,
+                    "dist_state_t_exp_exit": config.dist_state.t_exp_exit,
+                    "dist_state_t_comp_enter": config.dist_state.t_comp_enter,
+                    "dist_state_t_comp_exit": config.dist_state.t_comp_exit,
+                    "dist_state_a_cont_enter": config.dist_state.a_cont_enter,
+                    "dist_state_a_cont_exit": config.dist_state.a_cont_exit,
+                    "dist_state_a_revert_enter": config.dist_state.a_revert_enter,
+                    "dist_state_a_revert_exit": config.dist_state.a_revert_exit,
+                    "dist_state_v_low_threshold": config.dist_state.v_low_threshold,
+                    "dist_state_t_rise_threshold": config.dist_state.t_rise_threshold,
+                    "dist_state_s_neut_max": config.dist_state.s_neut_max,
+                    "dist_state_a_neut_max": config.dist_state.a_neut_max,
+                    "dist_state_t_neut_max": config.dist_state.t_neut_max,
+                    "dist_state_v_neut_min": config.dist_state.v_neut_min,
+                    "dist_state_v_neut_max": config.dist_state.v_neut_max,
+                    "dist_state_t_exp_plus": config.dist_state.t_exp_plus,
+                    "dist_state_t_exp_plus_plus": config.dist_state.t_exp_plus_plus,
+                    "dist_state_t_comp_plus": config.dist_state.t_comp_plus,
+                    "dist_state_t_comp_plus_plus": config.dist_state.t_comp_plus_plus,
+                    "dist_state_a_cont_plus": config.dist_state.a_cont_plus,
+                    "dist_state_a_cont_plus_plus": config.dist_state.a_cont_plus_plus,
+                    "dist_state_a_revert_plus": config.dist_state.a_revert_plus,
+                    "dist_state_a_revert_plus_plus": config.dist_state.a_revert_plus_plus,
+                    "dist_state_s_exh_plus": config.dist_state.s_exh_plus,
+                    "dist_state_s_exh_plus_plus": config.dist_state.s_exh_plus_plus,
+                    "dist_state_p_confirm_threshold": config.dist_state.p_confirm_threshold,
+                    "dist_state_token_min_hold_bars_3m": (
+                        config.dist_state.token_min_hold_bars_3m
+                    ),
+                    "dist_state_token_min_hold_bars_15m": (
+                        config.dist_state.token_min_hold_bars_15m
+                    ),
+                    "dist_state_token_min_hold_bars_1h": (
+                        config.dist_state.token_min_hold_bars_1h
+                    ),
+                    "dist_state_token_min_hold_bars_4h": (
+                        config.dist_state.token_min_hold_bars_4h
+                    ),
+                },
+            )
+        else:
+            logging.warning("--dist-dia enabled but runtime.dist_state.enabled=false; no dist diagnostics emitted.")
 
     last_update = time.monotonic()
     last_frame = last_update
@@ -389,7 +516,9 @@ def _run(
         _drain_events(queue_events, runtime)
         if dist_feed is not None and dist_engine is not None:
             for dist_event in dist_feed.drain():
-                dist_snapshot = dist_engine.on_kline_close(dist_event)
+                dist_snapshot, dist_debug = dist_engine.on_kline_close_with_diagnostics(dist_event)
+                if dist_diagnostics is not None:
+                    dist_diagnostics.log_close(dist_event, dist_debug)
 
         now = time.monotonic()
         if now - last_update >= update_interval_s:
@@ -1323,6 +1452,146 @@ class DiagnosticLogger:
         self._rotate_if_needed()
 
 
+class DistStateDiagnosticLogger:
+    _METRIC_KEYS = ("v", "s", "a", "p", "t")
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        config: dict[str, object],
+        max_lines: int = 20_000,
+    ) -> None:
+        self._base_path = path
+        self._config = config
+        self._max_lines = max_lines
+        self._line_count = 0
+        self._part = 0
+        self._run_id = time.strftime("%Y%m%d-%H%M%S")
+        self._base_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self._open_new_file()
+        self._write_meta()
+        self._expected_by_tf: dict[str, int] = {}
+        self._captured_by_tf: dict[str, dict[str, int]] = {}
+
+    def _open_new_file(self) -> TextIO:
+        suffix = f"-{self._run_id}-p{self._part:02d}.jsonl"
+        filename = self._base_path.with_name(self._base_path.stem + suffix)
+        self._part += 1
+        self._line_count = 0
+        return filename.open("w", encoding="utf-8")
+
+    def _write_meta(self) -> None:
+        meta = {"_meta": {"type": "dist_state_config", "config": self._config}}
+        self._file.write(json.dumps(meta, separators=(",", ":")) + "\n")
+        self._file.flush()
+
+    def _rotate_if_needed(self) -> None:
+        if self._line_count < self._max_lines:
+            return
+        self._file.close()
+        self._file = self._open_new_file()
+        self._write_meta()
+
+    def log_close(self, event: DistKlineCloseEvent, debug: dict[str, object]) -> None:
+        tf = str(debug.get("tf", event.tf))
+        processed = bool(debug.get("processed", False))
+        if processed:
+            expected = self._expected_by_tf.get(tf, 0) + 1
+            self._expected_by_tf[tf] = expected
+            metric_counts = self._captured_by_tf.setdefault(tf, {k: 0 for k in self._METRIC_KEYS})
+            for metric in self._METRIC_KEYS:
+                value = debug.get(f"metrics_{metric}")
+                if value is not None:
+                    metric_counts[metric] += 1
+        expected = self._expected_by_tf.get(tf, 0)
+        metric_counts = self._captured_by_tf.setdefault(tf, {k: 0 for k in self._METRIC_KEYS})
+        coverage_pct = {
+            f"coverage_{metric}_pct": (
+                (float(metric_counts[metric]) / float(expected) * 100.0) if expected > 0 else 0.0
+            )
+            for metric in self._METRIC_KEYS
+        }
+        record = {
+            "event_type": "dist_state_close",
+            "ts_wall_ms": int(time.time() * 1000),
+            "symbol": event.symbol.upper(),
+            "source_id": event.source_id,
+            "tf": tf,
+            "kline_close_ms": event.kline_close_ms,
+            "event_ts_recv_ms": event.ts_recv_ms,
+            "event_kline_open_ms": event.kline_open_ms,
+            "event_open": event.open,
+            "event_high": event.high,
+            "event_low": event.low,
+            "event_close": event.close,
+            "processed": processed,
+            "drop_reason": debug.get("drop_reason"),
+            "p_availability_mode": debug.get("p_availability_mode"),
+            "selection_source": debug.get("selection_source"),
+            "selection_reason": debug.get("selection_reason"),
+            "oi_tolerance_ms": debug.get("oi_tolerance_ms"),
+            "oi_sample_present": debug.get("oi_sample_present"),
+            "oi_sample_venue_time_ms": debug.get("oi_sample_venue_time_ms"),
+            "oi_sample_oi": debug.get("oi_sample_oi"),
+            "oi_sample_recv_ms": debug.get("oi_sample_recv_ms"),
+            "oi_sample_seq": debug.get("oi_sample_seq"),
+            "oi_offset_ms": debug.get("oi_offset_ms"),
+            "oi_staleness_ms": debug.get("oi_staleness_ms"),
+            "sampler_reason": debug.get("sampler_reason"),
+            "verify_reason": debug.get("verify_reason"),
+            "sampler_offset_ms": debug.get("sampler_offset_ms"),
+            "verify_offset_ms": debug.get("verify_offset_ms"),
+            "sampler_tolerance_margin_ms": debug.get("sampler_tolerance_margin_ms"),
+            "verify_tolerance_margin_ms": debug.get("verify_tolerance_margin_ms"),
+            "best_candidate_source": debug.get("best_candidate_source"),
+            "best_candidate_abs_offset_ms": debug.get("best_candidate_abs_offset_ms"),
+            "best_candidate_tolerance_margin_ms": debug.get("best_candidate_tolerance_margin_ms"),
+            "selected_offset_ms": debug.get("selected_offset_ms"),
+            "selected_abs_offset_ms": debug.get("selected_abs_offset_ms"),
+            "selected_tolerance_margin_ms": debug.get("selected_tolerance_margin_ms"),
+            "oi_bootstrap_source": debug.get("oi_bootstrap_source"),
+            "oi_bootstrap_age_ms": debug.get("oi_bootstrap_age_ms"),
+            "sampler_snapshot_present": event.sampler_snapshot is not None,
+            "verify_snapshot_present": event.verify_snapshot is not None,
+            "p_available": debug.get("p_available"),
+            "p_status": ("computed" if debug.get("p_available") else "missing"),
+            "p_missing_reason": debug.get("p_missing_reason"),
+            "ready_core": debug.get("ready_core"),
+            "ready_p": debug.get("ready_p"),
+            "metrics_v": debug.get("metrics_v"),
+            "metrics_s": debug.get("metrics_s"),
+            "metrics_a": debug.get("metrics_a"),
+            "metrics_p": debug.get("metrics_p"),
+            "metrics_t": debug.get("metrics_t"),
+            "bin_v": debug.get("bin_v"),
+            "bin_s": debug.get("bin_s"),
+            "bin_a": debug.get("bin_a"),
+            "bin_p": debug.get("bin_p"),
+            "bin_t": debug.get("bin_t"),
+            "token": debug.get("token"),
+            "token_strength": debug.get("token_strength"),
+            "token_changed": debug.get("token_changed"),
+            "token_prev": debug.get("token_prev"),
+            "token_prev_strength": debug.get("token_prev_strength"),
+            "token_dwell_blocked": debug.get("token_dwell_blocked"),
+            "token_override_reason": debug.get("token_override_reason"),
+            "token_predicate_hits": debug.get("token_predicate_hits"),
+            "token_inputs": debug.get("token_inputs"),
+            "expected_closes_tf": expected,
+            "captured_v_tf": metric_counts["v"],
+            "captured_s_tf": metric_counts["s"],
+            "captured_a_tf": metric_counts["a"],
+            "captured_p_tf": metric_counts["p"],
+            "captured_t_tf": metric_counts["t"],
+            **coverage_pct,
+        }
+        self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+        self._file.flush()
+        self._line_count += 1
+        self._rotate_if_needed()
+
+
 def _runtime_config_map(config: AppConfig) -> dict[str, object]:
     source_registry = {
         source_id: {
@@ -1438,7 +1707,15 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "dist_state_warmup_oi_hist_points": config.dist_state.warmup_oi_hist_points,
         "dist_state_ready_core_min_bars": config.dist_state.ready_core_min_bars,
         "dist_state_ready_p_min_deltas": config.dist_state.ready_p_min_deltas,
-        "dist_state_oi_join_tolerance_ms": config.dist_state.oi_join_tolerance_ms,
+        "dist_state_p_availability_mode": config.dist_state.p_availability_mode,
+        "dist_state_oi_poll_interval_ms": config.dist_state.oi_poll_interval_ms,
+        "dist_state_oi_tolerance_ms": config.dist_state.oi_tolerance_ms,
+        "dist_state_oi_time_missing_policy": config.dist_state.oi_time_missing_policy,
+        "dist_state_oi_verify_enabled": config.dist_state.oi_verify_enabled,
+        "dist_state_oi_verify_timeframes": config.dist_state.oi_verify_timeframes,
+        "dist_state_oi_verify_timeout_ms": config.dist_state.oi_verify_timeout_ms,
+        "dist_state_oi_verify_max_rate_per_min": config.dist_state.oi_verify_max_rate_per_min,
+        "dist_state_oi_quality_window_ms": config.dist_state.oi_quality_window_ms,
         "dist_state_oi_seed_points": config.dist_state.oi_seed_points,
         "dist_state_oi_seed_min_points": config.dist_state.oi_seed_min_points,
         "dist_state_v_scale_window_bars": config.dist_state.v_scale_window_bars,
@@ -1453,6 +1730,42 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "dist_state_k_s": config.dist_state.k_s,
         "dist_state_k_p": config.dist_state.k_p,
         "dist_state_k_t": config.dist_state.k_t,
+        "dist_state_tokens_enabled": config.dist_state.tokens_enabled,
+        "dist_state_tokens_fail_fast_unknown": config.dist_state.tokens_fail_fast_unknown,
+        "dist_state_s_dir_deadband": config.dist_state.s_dir_deadband,
+        "dist_state_s_ext_enter": config.dist_state.s_ext_enter,
+        "dist_state_s_ext_exit": config.dist_state.s_ext_exit,
+        "dist_state_s_revert_min_stretch": config.dist_state.s_revert_min_stretch,
+        "dist_state_t_exp_enter": config.dist_state.t_exp_enter,
+        "dist_state_t_exp_exit": config.dist_state.t_exp_exit,
+        "dist_state_t_comp_enter": config.dist_state.t_comp_enter,
+        "dist_state_t_comp_exit": config.dist_state.t_comp_exit,
+        "dist_state_a_cont_enter": config.dist_state.a_cont_enter,
+        "dist_state_a_cont_exit": config.dist_state.a_cont_exit,
+        "dist_state_a_revert_enter": config.dist_state.a_revert_enter,
+        "dist_state_a_revert_exit": config.dist_state.a_revert_exit,
+        "dist_state_v_low_threshold": config.dist_state.v_low_threshold,
+        "dist_state_t_rise_threshold": config.dist_state.t_rise_threshold,
+        "dist_state_s_neut_max": config.dist_state.s_neut_max,
+        "dist_state_a_neut_max": config.dist_state.a_neut_max,
+        "dist_state_t_neut_max": config.dist_state.t_neut_max,
+        "dist_state_v_neut_min": config.dist_state.v_neut_min,
+        "dist_state_v_neut_max": config.dist_state.v_neut_max,
+        "dist_state_t_exp_plus": config.dist_state.t_exp_plus,
+        "dist_state_t_exp_plus_plus": config.dist_state.t_exp_plus_plus,
+        "dist_state_t_comp_plus": config.dist_state.t_comp_plus,
+        "dist_state_t_comp_plus_plus": config.dist_state.t_comp_plus_plus,
+        "dist_state_a_cont_plus": config.dist_state.a_cont_plus,
+        "dist_state_a_cont_plus_plus": config.dist_state.a_cont_plus_plus,
+        "dist_state_a_revert_plus": config.dist_state.a_revert_plus,
+        "dist_state_a_revert_plus_plus": config.dist_state.a_revert_plus_plus,
+        "dist_state_s_exh_plus": config.dist_state.s_exh_plus,
+        "dist_state_s_exh_plus_plus": config.dist_state.s_exh_plus_plus,
+        "dist_state_p_confirm_threshold": config.dist_state.p_confirm_threshold,
+        "dist_state_token_min_hold_bars_3m": config.dist_state.token_min_hold_bars_3m,
+        "dist_state_token_min_hold_bars_15m": config.dist_state.token_min_hold_bars_15m,
+        "dist_state_token_min_hold_bars_1h": config.dist_state.token_min_hold_bars_1h,
+        "dist_state_token_min_hold_bars_4h": config.dist_state.token_min_hold_bars_4h,
         "source_registry": source_registry,
     }
 

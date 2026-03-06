@@ -56,6 +56,10 @@ Example rendering style (illustrative, not binding):
 
 The plan suggests an optional per-row token to reduce cognitive translation cost.
 
+Token contract for v1 is locked by:
+
+- `docs/decisions/FL-0071-dist-state-row-tokens-v1.md`
+
 Token constraints:
 
 - deterministic mapping from the row metrics (no free-form text),

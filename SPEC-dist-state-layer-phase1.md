@@ -7,6 +7,7 @@ related:
   - "docs/reference/dist_state_layer_v1_contract.md"
   - "docs/reference/dist_state_layer_binance_inputs.md"
   - "docs/decisions/FL-0069-distribution-state-layer-v1.md"
+  - "docs/decisions/FL-0070-open-interest-sampling-contract.md"
 ---
 
 # SPEC — Distribution State Layer (Phase 1)
@@ -20,10 +21,10 @@ This layer is a **separate instrument** displayed alongside the lens. It must no
 1. Add a stable, bounded, multi-timeframe **distribution geometry** readout for `BTCUSDT`:
    - `3m`, `15m`, `1h`, `4h`
 2. Make `P` (positioning pressure from OI) **first-class** and **perp-coherent** with the price series used by the layer.
-3. Keep overhead negligible:
+3. Keep overhead controlled and observable:
    - one WS connection (multiplexed streams),
-   - OI REST sampled once per `3m` bar close (~20 calls/hour),
-   - no per-trade aggregation.
+  - OI via continuous REST sampling (cadence is configurable) with optional on-close verification,
+  - no per-trade aggregation.
 4. Prepare Phase 2+ without refactors:
    - stable data models,
    - row-level readiness/missingness,
@@ -70,19 +71,17 @@ Warmup via REST klines:
 
 ### 3.3 Open interest source (live)
 
-OI snapshot via REST:
+See `docs/decisions/FL-0070-open-interest-sampling-contract.md`.
+
+Live OI snapshot via REST:
 
 `GET /fapi/v1/openInterest?symbol=BTCUSDT`
 
-Sample cadence:
+Sampling model (Phase 1):
 
-- once per `3m` bar close event, immediately after the close is observed.
-
-Alignment rule (Phase 1):
-
-- OI is joined to a close by the deterministic bucket rule in §6.2 (keyed by `kline_close_ms`), with a tolerance gate
-  against the response `time` field (`oi_join_tolerance_ms`).
-- if the OI request fails or fails the tolerance gate, `P` is unavailable for that close bucket.
+- run a continuous sampler at `oi_poll_interval_ms` to maintain `oi_last`.
+- optionally perform an additional “verify fetch” at each kline close for diagnostics and robustness (§6.2).
+- `P` behavior is mode-driven (strict vs continuous; see §6.2 and `FL-0070`).
 
 ### 3.4 Open interest warmup
 
@@ -106,6 +105,11 @@ Warmup plan:
 
 - for `15m/1h/4h`: warmup directly from matching-period history.
 - for `3m`: seed normalization from `5m` history (Option A described in §6.3).
+- set the sampler baseline `oi_last` to the most recent warmup OI value so `P` is continuous immediately after warmup.
+  If warmup OI cannot be fetched, dist-state must delay initialization until the first successful live OI snapshot.
+- bootstrap diagnostics (required):
+  - `oi_bootstrap_source: "warmup_hist" | "first_live"`
+  - `oi_bootstrap_age_ms` at initialization.
 
 ## 4) Timebase and determinism
 
@@ -138,6 +142,13 @@ Required input shapes:
 - `low: float`
 - `close: float`
 
+**DistOiSamplerSnapshot** (atomic read at close)
+
+- `oi: float | None`
+- `venue_time_ms: int | None`
+- `ts_recv_ms: int | None`
+- `sample_seq: int | None`
+
 **DistOiSnapshotEvent**
 
 - `ts_recv_ms: int`
@@ -154,7 +165,7 @@ Per timeframe row:
 
 - `tf: str`
 - `ready_core: bool` (warmup satisfied for core metrics; see §5.3)
-- `ready_p: bool` (OI/P normalization initialized; missingness rules still apply; see §5.3)
+- `ready_p: bool` (OI/P normalization initialized; availability behavior is mode-driven; see §5.3 and `FL-0070`)
 - `last_close_ms: int | None`
 - `metrics: DistRowMetrics` (bounded floats; see §7)
 - `bins: DistRowBins` (coarse levels 0..K for rendering)
@@ -195,8 +206,8 @@ Phase 1 readiness gates (locked):
 
 Notes:
 
-- A row can be `ready_core` while `P` is still unavailable for a specific bucket (OI missing/tolerance failure); readiness
-  only means the normalization state is initialized and eligible.
+- `ready_p` is a normalization/stability gate. Availability semantics are controlled by `p_availability_mode`.
+  Quality issues (staleness/offset/time-missing) are always recorded via diagnostics.
 
 ## 6) Engine update rules (Phase 1)
 
@@ -235,38 +246,58 @@ On `DistKlineCloseEvent` for timeframe `tf`:
    - `tr_t = max(high-low, abs(high-prev_close), abs(low-prev_close))`
 4. update autocorrelation/persistence estimator from sign agreement between `r_t` and `r_{t-1}`.
 5. update stretch estimator (see §7.2).
-6. if an OI sample has been captured for this close tick (see §6.2), update `P` for this row using `ΔOI`.
+6. update `P` for this row from the current OI sampler state (see §6.2).
 7. compute bounded metrics and bins for rendering.
 
-### 6.2 OI sampling on 3m close
+### 6.2 OI sampling (continuous), close-time selection, and P availability mode
 
-We join OI deterministically by close bucket id (redline).
+We do **not** join OI to a specific timeframe’s close event.
 
-Definitions:
+Instead, the dist runtime maintains a continuous OI sampler for the configured source and uses the sampler’s state at the
+moment each close is processed.
 
-- close bucket id: `bucket_id = (source_id, kline_close_ms)`
+Rules (Phase 1; binding):
 
-Rules:
-
-1. On each processed `3m` close (after §6.0 idempotency checks), perform one REST request:
-   - `/fapi/v1/openInterest?symbol=BTCUSDT`
-2. Build a `DistOiSnapshotEvent`:
-   - `oi` parsed from response `openInterest` (contract units),
-   - `venue_time_ms` from response `time` (ms) when present.
-3. Missing venue-time policy (redline; strict for Phase 1):
-   - if `venue_time_ms` is missing/None, discard the sample for this bucket and treat `P` as unavailable for the bucket.
-4. Tolerance gate (redline):
-   - if `abs(venue_time_ms - kline_close_ms) > oi_join_tolerance_ms`, discard the sample for this bucket.
-5. Bucket lifecycle + immutability (redline):
-   - store accepted samples in a read-only, multi-consumer bucket map keyed by `bucket_id`.
-   - first write wins: if a bucket key already exists, ignore subsequent writes (do not mutate).
-   - eviction is deterministic and keyed off kline close time:
-     - retain a bucket until `kline_close_ms + oi_join_tolerance_ms`
-     - evict when processing any later close where `current_close_ms > bucket_close_ms + oi_join_tolerance_ms`
-6. Consume semantics (redline):
-   - any row close event may read the bucket; never pop on first consume.
-   - if a row close has no bucket entry for its `bucket_id`, `P` is unavailable for that row close (no retries, no
-     carry-forward, no imputation).
+1. Maintain a continuous sampler of `openInterest` for `BTCUSDT`:
+   - cadence: `oi_poll_interval_ms`
+   - deterministic ordering with monotonic `order_key`:
+     - primary key: `venue_time_ms` when present,
+     - fallback key: `ts_recv_ms` when `venue_time_ms` is missing,
+     - tie-break: strictly increasing `sample_seq`.
+2. At each processed close with venue close timestamp `t_close`:
+   - read one atomic sampler snapshot (`oi`, `venue_time_ms`, `ts_recv_ms`, `sample_seq`)
+   - freeze it as `oi_snapshot_close` for `(source_id, kline_close_ms)`
+   - define `OI(t_close) := oi_snapshot_close.oi`
+   - compute `ΔOI = OI(t_close) - OI(prev_close)`
+3. same-close multi-timeframe coherence:
+   - all rows sharing `(source_id, kline_close_ms)` must use the same frozen `oi_snapshot_close`.
+   - per-row OI drift on the same close id is invalid; count as diagnostic breach.
+4. `P` availability mode (`p_availability_mode`, see `FL-0070`):
+   - `strict` (validation): `P` may be unavailable when OI policy checks fail; missing reasons are required diagnostics.
+   - `continuous` (production target): no fallbacks; `P` is computed when an OI sample meets tolerance, otherwise missing.
+   - mode note: both modes share the same math + diagnostics schema; only operational posture differs (sampling/verification
+     tuned to make misses rare).
+5. quality diagnostics are required in both modes:
+   - `oi_offset_ms := oi_last_venue_time_ms - t_close` when venue time exists
+   - `oi_staleness_ms := t_close - oi_last_venue_time_ms` when venue time exists
+   - mode-specific miss/degrade counters
+6. strict-mode missing reason enum is fixed:
+   - `not_initialized`
+   - `no_sampler_value`
+   - `stale_over_limit`
+   - `offset_over_limit`
+   - `time_missing_policy`
+7. Tolerance gate (binding; applies in both modes):
+   - if `oi_time_missing_policy == "reject"` and `venue_time_ms` is missing, `P` is missing with reason
+     `time_missing_policy`.
+   - if `abs(venue_time_ms - t_close) > oi_tolerance_ms`, `P` is missing:
+     - `stale_over_limit` if `venue_time_ms < t_close - oi_tolerance_ms`
+     - `offset_over_limit` if `venue_time_ms > t_close + oi_tolerance_ms`
+8. Optional verification at close (recommended):
+   - bounded verify fetch per `FL-0070` settings
+   - build candidates from (atomic sampler snapshot, verify snapshot) and choose the closest eligible sample within
+     `oi_tolerance_ms`
+   - freeze the chosen candidate per close id (same-close coherence)
 
 ### 6.3 3m `P` warmup (Option A: variance seeding)
 
@@ -283,7 +314,8 @@ Because `openInterestHist(period=3m)` is not available:
    - `var_oi_3m_seed = var_oi_5m_last * (3.0 / 5.0)`
 5. Initialize the 3m row’s `var_oi` state to `var_oi_3m_seed` and set:
    - `oi_var_initialized = True` only if at least `oi_seed_min_points` completed 5m deltas were processed.
-6. Thereafter, compute true `ΔOI_3m` live from OI snapshots sampled at each 3m close.
+6. Thereafter, compute true `ΔOI_3m` live from `OI(t_close)` values produced by the continuous sampler (§6.2) at each 3m
+   close.
 
 This seeding affects only early behavior; after enough live 3m closes, the live `ΔOI_3m` series dominates.
 
@@ -296,7 +328,8 @@ Phase 1 exposes five metrics per row:
 - `V` (volatility state)
 - `S` (stretch)
 - `A` (autocorrelation / persistence bias)
-- `P` (positioning pressure; may be unavailable during warmup/failures)
+- `P` (positioning pressure; strict-mode missingness allowed for validation; production goal is “computed on every close
+  under normal operation” via sampling+verification, without fallbacks; see `FL-0070`)
 - `T` (transition pressure)
 
 ### 7.1 V — volatility state
@@ -351,7 +384,11 @@ At bar close:
 
 Availability rules:
 
-- if OI snapshot missing or `sigma_oi` uninitialized, mark `P` unavailable for that row close.
+- `strict` mode: `P` may be unavailable when OI policy checks fail.
+- `continuous` mode: no fallbacks; `P` is computed only when an OI sample meets tolerance, otherwise missing.
+- Tolerance policy is global in v1:
+  - require `venue_time_ms` when `oi_time_missing_policy == "reject"`,
+  - require `abs(venue_time_ms - kline_close_ms) <= oi_tolerance_ms`.
 
 ### 7.5 T — transition pressure (ATR short/long ratio)
 
@@ -378,7 +415,8 @@ Add hysteresis per metric bin if flicker is observed (same philosophy as lens).
 
 Missingness:
 
-- if `P` unavailable, render a stable placeholder glyph (no flicker).
+- in `strict` mode, render unavailable `P` with a stable placeholder glyph.
+- in `continuous` mode, `P` missing indicates an OI tolerance breach; still render the placeholder and rely on diagnostics.
 - if a row is not `ready_core`, dim the row (or show a warmup marker).
 - if any metric is unavailable for a row close, render it as unavailable (do not impute/carry-forward previous values).
 
@@ -416,8 +454,17 @@ Minimum required keys:
 - readiness gates (locked in §5.3):
   - `ready_core_min_bars: int` (e.g. 30)
   - `ready_p_min_deltas: int` (e.g. 10)
-- OI join + seeding (redlines):
-  - `oi_join_tolerance_ms: int` (e.g. 15000)
+- OI sampling + seeding (see `FL-0070`):
+  - `p_availability_mode: str` (`"strict"` or `"continuous"`)
+  - default `p_availability_mode = "strict"`
+  - `oi_poll_interval_ms: int` (e.g. 1000)
+  - `oi_tolerance_ms: int` (e.g. 7000; gate for computing `P` in both modes)
+  - `oi_time_missing_policy: str` (v1 default `"reject"`)
+  - `oi_verify_enabled: bool` (default true)
+  - `oi_verify_timeframes: list[str]` (default `["3m","15m","1h","4h"]`)
+  - `oi_verify_timeout_ms: int` (default 1200)
+  - `oi_verify_max_rate_per_min: int` (default 24)
+  - `oi_quality_window_ms: int` (e.g. 15000; diagnostic threshold, not an availability gate)
   - `oi_seed_points: int` (default = `warmup_oi_hist_points`)
   - `oi_seed_min_points: int` (e.g. 30)
 - V scaling (locked in §7.1):
@@ -437,8 +484,11 @@ Minimum required keys:
    - shows stable glyphs (bounded, no NaNs),
    - labels its source (`binance_perp`) clearly.
 3. OI overhead:
-   - at most one `openInterest` REST call per 3m bar close (~20/hour).
-4. Warmup:
-   - `15m/1h/4h` `P` is eligible to become available immediately after warmup (normal missingness rules still apply),
-   - `3m` `P` is eligible to become available quickly (variance seeded from 5m history, then live deltas; missingness rules
-     still apply).
+   - continuous sampling cadence is configurable, logged, and does not starve the UI loop.
+   - on-close verification (if enabled) is bounded at one request per processed close.
+4. Rollout behavior:
+   - in `strict` mode, missing `P` reasons are deterministic and fully logged.
+   - in `continuous` mode, `P` remains fail-closed (no fallbacks): computed only when OI meets tolerance; otherwise missing.
+5. Mode switching:
+   - mode switch is explicit config change (no auto-switch in v1).
+   - recommended practice: monitor strict-mode diagnostics per timeframe before switching.

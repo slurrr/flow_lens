@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+import locale
 import time
 from dataclasses import dataclass
 from typing import Any, TypeAlias
@@ -301,8 +302,8 @@ class Renderer:
         # If vertical space is tight: drop 4h -> 1h -> 3m, keep 15m last.
         drop_order = ["4h", "1h", "3m"]
         top = status_bottom + 2
-        min_box_height = 4
-        while rows and top + min_box_height + len(rows) - 1 >= maxy:
+        min_panel_rows = 2
+        while rows and top + min_panel_rows + len(rows) - 1 >= maxy:
             dropped = False
             for tf in drop_order:
                 idx = next((i for i, row in enumerate(rows) if row.tf == tf), None)
@@ -316,26 +317,39 @@ class Renderer:
             return
 
         header = f"DIST {dist_snapshot.symbol} ({dist_snapshot.source_id})"
-        line_rows = [header, "TF  RC RP  V  S  A  P  T"]
-        for row in rows:
-            line_rows.append(_format_dist_row(row))
+        unicode_tokens = _unicode_tokens_supported()
+        token_modes: tuple[str, ...]
+        if dist_snapshot.tokens_enabled:
+            token_modes = ("full", "base", "none")
+        else:
+            token_modes = ("none",)
+        line_rows: list[str] = []
+        available_width = max(1, maxx - max(0, map_left) - 1)
+        for mode in token_modes:
+            candidate = [header, _dist_header_line(mode)]
+            for row in rows:
+                candidate.append(
+                    _format_dist_row(
+                        row,
+                        token_mode=mode,
+                        unicode_tokens=unicode_tokens,
+                    )
+                )
+            if max(len(line) for line in candidate) <= available_width:
+                line_rows = candidate
+                break
+            line_rows = candidate
 
-        inner_width = min(max(len(line) for line in line_rows), maxx - 2)
-        if inner_width <= 0:
+        if not line_rows:
             return
-        box_height = len(line_rows) + 2
-        bottom = top + box_height - 1
+        panel_height = len(line_rows)
+        bottom = top + panel_height - 1
         if bottom >= maxy:
             return
-        x0 = min(max(0, map_left), maxx - (inner_width + 2))
-        x0 = min(x0, max(0, map_right - inner_width))
-
-        _safe_addstr(stdscr, top, x0, "┌" + "─" * inner_width + "┐")
-        for idx, line in enumerate(line_rows, start=1):
-            _safe_addstr(stdscr, top + idx, x0, "│")
-            _addstr_limited(stdscr, top + idx, x0 + 1, line, x0 + 1 + inner_width)
-            _safe_addstr(stdscr, top + idx, x0 + inner_width + 1, "│")
-        _safe_addstr(stdscr, bottom, x0, "└" + "─" * inner_width + "┘")
+        x0 = min(max(0, map_left), maxx - 1)
+        x_limit = maxx - 1
+        for idx, line in enumerate(line_rows):
+            _addstr_limited(stdscr, top + idx, x0, line, x_limit)
 
     def _ensure_colors(self) -> None:
         if self._colors_ready:
@@ -790,17 +804,64 @@ def _status_lines(
     return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp, line_control_baseline]
 
 
-def _format_dist_row(row: DistRowSnapshot) -> str:
+def _dist_header_line(token_mode: str) -> str:
+    if token_mode == "none":
+        return "TF  RC  RP   V  S  A  P  T"
+    return "TF  RC  RP   V  S  A  P  T  TOKEN"
+
+
+def _format_dist_row(
+    row: DistRowSnapshot,
+    *,
+    token_mode: str,
+    unicode_tokens: bool,
+) -> str:
     core = "Y" if row.ready_core else "N"
     ready_p = "Y" if row.ready_p else "N"
-    return (
-        f"{row.tf:<3}  {core}  {ready_p}  "
+    prefix = (
+        f"{row.tf:<3}  {core}   {ready_p}    "
         f"{_dist_bin_glyph(row.bins.v)}  "
         f"{_dist_bin_glyph(row.bins.s)}  "
         f"{_dist_bin_glyph(row.bins.a)}  "
         f"{_dist_bin_glyph(row.bins.p)}  "
         f"{_dist_bin_glyph(row.bins.t)}"
     )
+    if token_mode == "none":
+        return prefix
+    token_text = _format_dist_token(
+        row.token,
+        row.token_strength if token_mode == "full" else None,
+        unicode_tokens=unicode_tokens,
+    )
+    return f"{prefix}  {token_text:<9}"
+
+
+def _format_dist_token(
+    token: str | None,
+    strength: str | None,
+    *,
+    unicode_tokens: bool,
+) -> str:
+    if token is None:
+        return ""
+    rendered = token if unicode_tokens else _ascii_token_fallback(token)
+    if strength:
+        return f"{rendered}{strength}"
+    return rendered
+
+
+def _ascii_token_fallback(token: str) -> str:
+    mapping = {
+        "CONT↑": "CONT^",
+        "CONT↓": "CONTv",
+        "EXH↑": "EXH^",
+        "EXH↓": "EXHv",
+    }
+    return mapping.get(token, token)
+
+
+def _unicode_tokens_supported() -> bool:
+    return "UTF-8" in locale.getpreferredencoding(False).upper()
 
 
 def _dist_bin_glyph(value: int | None) -> str:
@@ -883,9 +944,10 @@ def _sign_with_deadband(value: float, deadband: float) -> int:
 def _addstr_limited(
     stdscr: CursesWindow, y: int, x: int, text: str, maxx: int, attr: int = 0
 ) -> int:
-    if x >= maxx - 1:
+    # maxx is an exclusive right bound.
+    if x >= maxx:
         return x
-    available = maxx - x - 1
+    available = maxx - x
     if available <= 0:
         return x
     chunk = text[:available]

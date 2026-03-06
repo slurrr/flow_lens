@@ -26,9 +26,11 @@ V1 constraints:
    - The dist layer includes an OI-derived positioning metric (`P`) with explicit availability and bounded normalization.
 5. **UI labeling**
    - The TUI must label the distribution panel’s source so users do not assume it matches the lens price series.
-6. **Missingness over imputation**
-   - When required inputs are missing or fail validation, row metrics must be marked unavailable rather than imputed or
-     silently carried forward.
+6. **Missingness, unless a continuity contract exists**
+   - Default: when required inputs are missing or fail validation, row metrics must be marked unavailable rather than
+     imputed or silently carried forward.
+   - Exception: if a later decision record defines an explicit continuity/availability contract (e.g., OI sampling for
+     `P`), follow that contract.
 
 ## Rationale
 
@@ -45,3 +47,4 @@ Implementation details and formulas belong in:
 - `SPEC-dist-state-layer-phase1.md`
 - `docs/reference/dist_state_layer_v1_contract.md`
 - `docs/reference/dist_state_layer_binance_inputs.md`
+- `docs/decisions/FL-0070-open-interest-sampling-contract.md`
