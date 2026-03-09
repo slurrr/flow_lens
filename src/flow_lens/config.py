@@ -196,6 +196,7 @@ class AppConfig:
     tui_frame_inset_px: int
     tui_frame_band_inner: float
     tui_frame_band_outer: float
+    tui_show_dev_panel: bool
     dist_state: DistStateRuntimeConfig
 
 
@@ -347,6 +348,7 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     tui_frame_inset_px = runtime_section.get("tui_frame_inset_px", 1)
     tui_frame_band_inner = runtime_section.get("tui_frame_band_inner", 0.995)
     tui_frame_band_outer = runtime_section.get("tui_frame_band_outer", 1.005)
+    tui_show_dev_panel = runtime_section.get("tui_show_dev_panel", True)
     dist_state_section = runtime_section.get("dist_state", {})
     if not isinstance(dist_state_section, dict):
         raise ValueError("runtime.dist_state must be a table.")
@@ -737,6 +739,8 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.tui_frame_band_inner must be > 0.")
     if float(tui_frame_band_outer) <= float(tui_frame_band_inner):
         raise ValueError("runtime.tui_frame_band_outer must be > runtime.tui_frame_band_inner.")
+    if not isinstance(tui_show_dev_panel, bool):
+        raise ValueError("runtime.tui_show_dev_panel must be a boolean.")
     if not isinstance(dist_state_enabled, bool):
         raise ValueError("runtime.dist_state.enabled must be a boolean.")
     if not isinstance(dist_state_symbol, str) or not dist_state_symbol.strip():
@@ -1036,6 +1040,7 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         tui_frame_inset_px=int(tui_frame_inset_px),
         tui_frame_band_inner=float(tui_frame_band_inner),
         tui_frame_band_outer=float(tui_frame_band_outer),
+        tui_show_dev_panel=bool(tui_show_dev_panel),
         dist_state=DistStateRuntimeConfig(
             enabled=bool(dist_state_enabled),
             symbol=normalize_symbol(dist_state_symbol),

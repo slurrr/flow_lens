@@ -227,3 +227,16 @@ Once tokens emit, tune toward the target behavior in §1:
 - Do not add a default `NEUT` “else” token.
 - Do not “fix” missing tokens by emitting fake tokens; tune thresholds and mapping semantics instead.
 
+## 10) Future: dwell scope (base token vs modifiers)
+
+V1 dwell (`token_min_hold_bars_*`) is applied to **base token changes** only.
+
+Even when a base token is held/blocked by dwell, modifiers are allowed to update from the latest metrics:
+
+- strength (`+` / `++`) may change,
+- transition risk (`!`) may appear/disappear,
+- `P`-based confirmation/divergence may change modifiers,
+
+…as long as the base token is unchanged.
+
+This gives you stable “what is it doing?” labeling while still reflecting real-time changes in intensity and risk.

@@ -31,6 +31,7 @@ class RendererConfig:
     frame_inset_px: int = 1
     frame_band_inner: float = 0.995
     frame_band_outer: float = 1.005
+    show_dev_panel: bool = True
     control_baseline_center_suppress_band: float = 0.02
     axis_flash_duration_s: float = 0.25
     axis_flash_cooldown_s: float = 0.75
@@ -194,28 +195,30 @@ class Renderer:
             axis_flash_sign=self._axis_flash_sign if self._axis_flash_active() else 0,
         )
 
-        status_bottom = self._draw_status_bar(
+        dist_bottom = self._draw_dist_panel(
             stdscr,
-            spot_stats=spot_stats,
-            perp_stats=perp_stats,
-            metrics=metrics,
-            state=state,
-            symbol=symbol,
+            dist_snapshot=dist_snapshot,
             map_left=map_left,
             map_right=map_right,
             map_bottom=map_bottom,
             maxy=maxy,
             maxx=maxx,
         )
-        self._draw_dist_panel(
-            stdscr,
-            dist_snapshot=dist_snapshot,
-            map_left=map_left,
-            map_right=map_right,
-            status_bottom=status_bottom,
-            maxy=maxy,
-            maxx=maxx,
-        )
+        if self._config.show_dev_panel:
+            self._draw_status_bar(
+                stdscr,
+                spot_stats=spot_stats,
+                perp_stats=perp_stats,
+                metrics=metrics,
+                state=state,
+                symbol=symbol,
+                map_left=map_left,
+                map_right=map_right,
+                map_bottom=map_bottom,
+                maxy=maxy,
+                maxx=maxx,
+                top_row=(dist_bottom + 3) if dist_bottom >= 0 else None,
+            )
 
         stdscr.refresh()
 
@@ -245,6 +248,7 @@ class Renderer:
         map_bottom: int,
         maxy: int,
         maxx: int,
+        top_row: int | None = None,
     ) -> int:
         lines = _status_lines(
             metrics,
@@ -253,7 +257,7 @@ class Renderer:
             perp_stats,
             spot_stats,
         )
-        top = map_bottom + 4
+        top = top_row if top_row is not None else map_bottom + 4
         if not lines:
             return top - 1
         inner_width = min(max(len(line) for line in lines), maxx - 2)
@@ -284,12 +288,12 @@ class Renderer:
         dist_snapshot: DistPanelSnapshot | None,
         map_left: int,
         map_right: int,
-        status_bottom: int,
+        map_bottom: int,
         maxy: int,
         maxx: int,
-    ) -> None:
+    ) -> int:
         if dist_snapshot is None:
-            return
+            return -1
         rows: list[DistRowSnapshot] = []
         ordered_tfs: tuple[DistTimeframe, ...] = ("3m", "15m", "1h", "4h")
         for tf in ordered_tfs:
@@ -297,11 +301,11 @@ class Renderer:
             if row is not None:
                 rows.append(row)
         if not rows:
-            return
+            return -1
 
         # If vertical space is tight: drop 4h -> 1h -> 3m, keep 15m last.
         drop_order = ["4h", "1h", "3m"]
-        top = status_bottom + 2
+        top = map_bottom + 5
         min_panel_rows = 2
         while rows and top + min_panel_rows + len(rows) - 1 >= maxy:
             dropped = False
@@ -314,9 +318,8 @@ class Renderer:
             if not dropped:
                 rows.pop()
         if not rows:
-            return
+            return -1
 
-        header = f"DIST {dist_snapshot.symbol} ({dist_snapshot.source_id})"
         unicode_tokens = _unicode_tokens_supported()
         token_modes: tuple[str, ...]
         if dist_snapshot.tokens_enabled:
@@ -324,9 +327,9 @@ class Renderer:
         else:
             token_modes = ("none",)
         line_rows: list[str] = []
-        available_width = max(1, maxx - max(0, map_left) - 1)
+        available_width = max(1, maxx - 1)
         for mode in token_modes:
-            candidate = [header, _dist_header_line(mode)]
+            candidate = [_dist_header_line()]
             for row in rows:
                 candidate.append(
                     _format_dist_row(
@@ -341,15 +344,20 @@ class Renderer:
             line_rows = candidate
 
         if not line_rows:
-            return
+            return -1
         panel_height = len(line_rows)
         bottom = top + panel_height - 1
         if bottom >= maxy:
-            return
-        x0 = min(max(0, map_left), maxx - 1)
+            return -1
+        max_len = max(len(line) for line in line_rows)
+        map_width = max(1, map_right - map_left + 1)
+        x0 = max(0, map_left + (map_width - max_len) // 2)
+        if x0 + max_len >= maxx:
+            x0 = max(0, maxx - max_len - 1)
         x_limit = maxx - 1
         for idx, line in enumerate(line_rows):
             _addstr_limited(stdscr, top + idx, x0, line, x_limit)
+        return bottom
 
     def _ensure_colors(self) -> None:
         if self._colors_ready:
@@ -804,10 +812,8 @@ def _status_lines(
     return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp, line_control_baseline]
 
 
-def _dist_header_line(token_mode: str) -> str:
-    if token_mode == "none":
-        return "TF  RC  RP   V  S  A  P  T"
-    return "TF  RC  RP   V  S  A  P  T  TOKEN"
+def _dist_header_line() -> str:
+    return f"{'TF':<4} {'V':^7} {'S':^7} {'A':^7} {'P':^7} {'T':^7} STATE"
 
 
 def _format_dist_row(
@@ -816,24 +822,22 @@ def _format_dist_row(
     token_mode: str,
     unicode_tokens: bool,
 ) -> str:
-    core = "Y" if row.ready_core else "N"
-    ready_p = "Y" if row.ready_p else "N"
     prefix = (
-        f"{row.tf:<3}  {core}   {ready_p}    "
-        f"{_dist_bin_glyph(row.bins.v)}  "
-        f"{_dist_bin_glyph(row.bins.s)}  "
-        f"{_dist_bin_glyph(row.bins.a)}  "
-        f"{_dist_bin_glyph(row.bins.p)}  "
-        f"{_dist_bin_glyph(row.bins.t)}"
+        f"{row.tf:<4} "
+        f"{_dist_unsigned_bar(row.bins.v):<7} "
+        f"{_dist_signed_bar(row.bins.s):<7} "
+        f"{_dist_signed_bar(row.bins.a):<7} "
+        f"{_dist_signed_bar(row.bins.p):<7} "
+        f"{_dist_signed_bar(row.bins.t):<7}"
     )
-    if token_mode == "none":
-        return prefix
     token_text = _format_dist_token(
         row.token,
         row.token_strength if token_mode == "full" else None,
         unicode_tokens=unicode_tokens,
     )
-    return f"{prefix}  {token_text:<9}"
+    if token_mode == "none":
+        token_text = ""
+    return f"{prefix} {token_text}"
 
 
 def _format_dist_token(
@@ -869,6 +873,29 @@ def _dist_bin_glyph(value: int | None) -> str:
         return "·"
     palette = "0123456"
     return palette[_clamp(value, 0, len(palette) - 1)]
+
+
+def _dist_unsigned_bar(value: int | None) -> str:
+    if value is None:
+        return "·······"
+    clamped = _clamp(value, 0, 6)
+    filled = "█" * clamped
+    empty = "·" * (7 - clamped)
+    return f"{filled}{empty}"
+
+
+def _dist_signed_bar(value: int | None) -> str:
+    if value is None:
+        return "···│···"
+    clamped = _clamp(value, 0, 6)
+    if clamped < 3:
+        left = "·" * clamped + "█" * (3 - clamped)
+        return f"{left}│···"
+    if clamped == 3:
+        return "···│···"
+    right_count = clamped - 3
+    right = "█" * right_count + "·" * (3 - right_count)
+    return f"···│{right}"
 
 
 def _fmt_float(value: float | None, digits: int) -> str:

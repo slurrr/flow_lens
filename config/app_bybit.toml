@@ -129,6 +129,7 @@ tui_frame_enabled = true
 tui_frame_inset_px = 0          # 0 touches edges; higher pulls inward
 tui_frame_band_inner = 0.995    # smaller => thicker 0.995
 tui_frame_band_outer = 1.01    # larger => thicker 1.005
+tui_show_dev_panel = true
 
 [runtime.hygiene]
 enabled = true
