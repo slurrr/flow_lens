@@ -37,6 +37,83 @@ class SourceConfig:
 
 
 @dataclass(frozen=True)
+class DistStateRuntimeConfig:
+    enabled: bool
+    symbol: str
+    source_id: str
+    timeframes: tuple[Literal["3m", "15m", "1h", "4h"], ...]
+    warmup_kline_bars: int
+    warmup_oi_hist_points: int
+    ready_core_min_bars: int
+    ready_p_min_deltas: int
+    p_availability_mode: Literal["strict", "continuous"]
+    oi_poll_interval_ms: int
+    oi_tolerance_ms: int
+    oi_time_missing_policy: Literal["reject"]
+    oi_verify_enabled: bool
+    oi_verify_timeframes: tuple[Literal["3m", "15m", "1h", "4h"], ...]
+    oi_verify_timeout_ms: int
+    oi_verify_max_rate_per_min: int
+    oi_quality_window_ms: int
+    oi_seed_points: int
+    oi_seed_min_points: int
+    v_scale_window_bars: int
+    v_scale_percentile: float
+    v_scale_min_samples: int
+    hl_vol_bars: float
+    hl_stretch_bars: float
+    hl_oi_bars: float
+    hl_atr_short_bars: float
+    hl_atr_long_bars: float
+    hl_a_bars: float
+    k_s: float
+    k_p: float
+    k_t: float
+    tokens_enabled: bool
+    tokens_fail_fast_unknown: bool
+    s_dir_deadband: float
+    s_ext_enter: float
+    s_ext_exit: float
+    s_revert_min_stretch: float
+    t_exp_enter: float
+    t_exp_exit: float
+    t_comp_enter: float
+    t_comp_exit: float
+    a_cont_enter: float
+    a_cont_exit: float
+    a_revert_enter: float
+    a_revert_exit: float
+    v_low_threshold: float
+    t_rise_threshold: float
+    s_neut_max: float
+    a_neut_max: float
+    t_neut_max: float
+    v_neut_min: float
+    v_neut_max: float
+    t_exp_plus: float
+    t_exp_plus_plus: float
+    t_comp_plus: float
+    t_comp_plus_plus: float
+    a_cont_plus: float
+    a_cont_plus_plus: float
+    a_revert_plus: float
+    a_revert_plus_plus: float
+    s_exh_plus: float
+    s_exh_plus_plus: float
+    p_confirm_threshold: float
+    token_min_hold_bars_3m: int
+    token_min_hold_bars_15m: int
+    token_min_hold_bars_1h: int
+    token_min_hold_bars_4h: int
+    narrative_enabled: bool
+    narrative_driver_tf: Literal["3m", "15m", "1h", "4h"]
+    narrative_linger_reminder_closes: int
+    narrative_max_chars: int
+    narrative_secondary_min_ratio: float
+    narrative_dir_ratio_min: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     adapters: Mapping[str, AdapterConfig]
     sources: Mapping[str, SourceConfig]
@@ -125,6 +202,8 @@ class AppConfig:
     tui_frame_inset_px: int
     tui_frame_band_inner: float
     tui_frame_band_outer: float
+    tui_show_dev_panel: bool
+    dist_state: DistStateRuntimeConfig
 
 
 def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
@@ -275,6 +354,94 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     tui_frame_inset_px = runtime_section.get("tui_frame_inset_px", 1)
     tui_frame_band_inner = runtime_section.get("tui_frame_band_inner", 0.995)
     tui_frame_band_outer = runtime_section.get("tui_frame_band_outer", 1.005)
+    tui_show_dev_panel = runtime_section.get("tui_show_dev_panel", True)
+    dist_state_section = runtime_section.get("dist_state", {})
+    if not isinstance(dist_state_section, dict):
+        raise ValueError("runtime.dist_state must be a table.")
+    dist_state_enabled = dist_state_section.get("enabled", False)
+    dist_state_symbol = dist_state_section.get("symbol", "BTC")
+    dist_state_source_id = dist_state_section.get("source_id", "binance_perp")
+    dist_state_timeframes = dist_state_section.get("timeframes", ["3m", "15m", "1h", "4h"])
+    dist_state_warmup_kline_bars = dist_state_section.get("warmup_kline_bars", 200)
+    dist_state_warmup_oi_hist_points = dist_state_section.get("warmup_oi_hist_points", 200)
+    dist_state_ready_core_min_bars = dist_state_section.get("ready_core_min_bars", 30)
+    dist_state_ready_p_min_deltas = dist_state_section.get("ready_p_min_deltas", 10)
+    dist_state_p_availability_mode = dist_state_section.get("p_availability_mode", "strict")
+    dist_state_oi_poll_interval_ms = dist_state_section.get("oi_poll_interval_ms", 1000)
+    dist_state_oi_tolerance_ms = dist_state_section.get("oi_tolerance_ms", 7000)
+    dist_state_oi_time_missing_policy = dist_state_section.get("oi_time_missing_policy", "reject")
+    dist_state_oi_verify_enabled = dist_state_section.get("oi_verify_enabled", True)
+    dist_state_oi_verify_timeframes = dist_state_section.get(
+        "oi_verify_timeframes", ["3m", "15m", "1h", "4h"]
+    )
+    dist_state_oi_verify_timeout_ms = dist_state_section.get("oi_verify_timeout_ms", 1200)
+    dist_state_oi_verify_max_rate_per_min = dist_state_section.get(
+        "oi_verify_max_rate_per_min", 24
+    )
+    dist_state_oi_quality_window_ms = dist_state_section.get("oi_quality_window_ms", 15_000)
+    dist_state_oi_seed_points = dist_state_section.get(
+        "oi_seed_points",
+        dist_state_warmup_oi_hist_points,
+    )
+    dist_state_oi_seed_min_points = dist_state_section.get("oi_seed_min_points", 30)
+    dist_state_v_scale_window_bars = dist_state_section.get("v_scale_window_bars", 200)
+    dist_state_v_scale_percentile = dist_state_section.get("v_scale_percentile", 0.80)
+    dist_state_v_scale_min_samples = dist_state_section.get("v_scale_min_samples", 30)
+    dist_state_hl_vol_bars = dist_state_section.get("hl_vol_bars", 20.0)
+    dist_state_hl_stretch_bars = dist_state_section.get("hl_stretch_bars", 20.0)
+    dist_state_hl_oi_bars = dist_state_section.get("hl_oi_bars", 20.0)
+    dist_state_hl_atr_short_bars = dist_state_section.get("hl_atr_short_bars", 10.0)
+    dist_state_hl_atr_long_bars = dist_state_section.get("hl_atr_long_bars", 40.0)
+    dist_state_hl_a_bars = dist_state_section.get("hl_a_bars", 20.0)
+    dist_state_k_s = dist_state_section.get("k_s", 0.6)
+    dist_state_k_p = dist_state_section.get("k_p", 0.6)
+    dist_state_k_t = dist_state_section.get("k_t", 1.0)
+    dist_state_tokens_enabled = dist_state_section.get("tokens_enabled", False)
+    dist_state_tokens_fail_fast_unknown = dist_state_section.get("tokens_fail_fast_unknown", False)
+    dist_state_s_dir_deadband = dist_state_section.get("s_dir_deadband", 0.10)
+    dist_state_s_ext_enter = dist_state_section.get("s_ext_enter", 0.60)
+    dist_state_s_ext_exit = dist_state_section.get("s_ext_exit", 0.45)
+    dist_state_s_revert_min_stretch = dist_state_section.get("s_revert_min_stretch", 0.20)
+    dist_state_t_exp_enter = dist_state_section.get("t_exp_enter", 0.40)
+    dist_state_t_exp_exit = dist_state_section.get("t_exp_exit", 0.25)
+    dist_state_t_comp_enter = dist_state_section.get("t_comp_enter", -0.40)
+    dist_state_t_comp_exit = dist_state_section.get("t_comp_exit", -0.25)
+    dist_state_a_cont_enter = dist_state_section.get("a_cont_enter", 0.35)
+    dist_state_a_cont_exit = dist_state_section.get("a_cont_exit", 0.20)
+    dist_state_a_revert_enter = dist_state_section.get("a_revert_enter", -0.35)
+    dist_state_a_revert_exit = dist_state_section.get("a_revert_exit", -0.20)
+    dist_state_v_low_threshold = dist_state_section.get("v_low_threshold", 0.25)
+    dist_state_t_rise_threshold = dist_state_section.get("t_rise_threshold", 0.05)
+    dist_state_s_neut_max = dist_state_section.get("s_neut_max", 0.12)
+    dist_state_a_neut_max = dist_state_section.get("a_neut_max", 0.12)
+    dist_state_t_neut_max = dist_state_section.get("t_neut_max", 0.12)
+    dist_state_v_neut_min = dist_state_section.get("v_neut_min", 0.30)
+    dist_state_v_neut_max = dist_state_section.get("v_neut_max", 0.70)
+    dist_state_t_exp_plus = dist_state_section.get("t_exp_plus", 0.60)
+    dist_state_t_exp_plus_plus = dist_state_section.get("t_exp_plus_plus", 0.80)
+    dist_state_t_comp_plus = dist_state_section.get("t_comp_plus", -0.60)
+    dist_state_t_comp_plus_plus = dist_state_section.get("t_comp_plus_plus", -0.80)
+    dist_state_a_cont_plus = dist_state_section.get("a_cont_plus", 0.55)
+    dist_state_a_cont_plus_plus = dist_state_section.get("a_cont_plus_plus", 0.75)
+    dist_state_a_revert_plus = dist_state_section.get("a_revert_plus", -0.55)
+    dist_state_a_revert_plus_plus = dist_state_section.get("a_revert_plus_plus", -0.75)
+    dist_state_s_exh_plus = dist_state_section.get("s_exh_plus", 0.70)
+    dist_state_s_exh_plus_plus = dist_state_section.get("s_exh_plus_plus", 0.85)
+    dist_state_p_confirm_threshold = dist_state_section.get("p_confirm_threshold", 0.25)
+    dist_state_token_min_hold_bars_3m = dist_state_section.get("token_min_hold_bars_3m", 2)
+    dist_state_token_min_hold_bars_15m = dist_state_section.get("token_min_hold_bars_15m", 2)
+    dist_state_token_min_hold_bars_1h = dist_state_section.get("token_min_hold_bars_1h", 1)
+    dist_state_token_min_hold_bars_4h = dist_state_section.get("token_min_hold_bars_4h", 1)
+    dist_state_narrative_enabled = dist_state_section.get("narrative_enabled", False)
+    dist_state_narrative_driver_tf = dist_state_section.get("narrative_driver_tf", "15m")
+    dist_state_narrative_linger_reminder_closes = dist_state_section.get(
+        "narrative_linger_reminder_closes", 0
+    )
+    dist_state_narrative_max_chars = dist_state_section.get("narrative_max_chars", 72)
+    dist_state_narrative_secondary_min_ratio = dist_state_section.get(
+        "narrative_secondary_min_ratio", 0.50
+    )
+    dist_state_narrative_dir_ratio_min = dist_state_section.get("narrative_dir_ratio_min", 0.20)
     if not isinstance(tbt_window_multiplier, (int, float)):
         raise ValueError("runtime.tbt_window_multiplier must be a number.")
     if not isinstance(update_window_seconds, (int, float)):
@@ -588,6 +755,203 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.tui_frame_band_inner must be > 0.")
     if float(tui_frame_band_outer) <= float(tui_frame_band_inner):
         raise ValueError("runtime.tui_frame_band_outer must be > runtime.tui_frame_band_inner.")
+    if not isinstance(tui_show_dev_panel, bool):
+        raise ValueError("runtime.tui_show_dev_panel must be a boolean.")
+    if not isinstance(dist_state_enabled, bool):
+        raise ValueError("runtime.dist_state.enabled must be a boolean.")
+    if not isinstance(dist_state_symbol, str) or not dist_state_symbol.strip():
+        raise ValueError("runtime.dist_state.symbol must be a non-empty string.")
+    if not isinstance(dist_state_source_id, str) or not dist_state_source_id.strip():
+        raise ValueError("runtime.dist_state.source_id must be a non-empty string.")
+    if not isinstance(dist_state_timeframes, list) or not dist_state_timeframes:
+        raise ValueError("runtime.dist_state.timeframes must be a non-empty list.")
+    allowed_timeframes = {"3m", "15m", "1h", "4h"}
+    parsed_timeframes: list[Literal["3m", "15m", "1h", "4h"]] = []
+    for timeframe in dist_state_timeframes:
+        if not isinstance(timeframe, str) or timeframe not in allowed_timeframes:
+            raise ValueError("runtime.dist_state.timeframes must only include 3m, 15m, 1h, 4h.")
+        parsed_timeframes.append(cast(Literal["3m", "15m", "1h", "4h"], timeframe))
+    if len(set(parsed_timeframes)) != len(parsed_timeframes):
+        raise ValueError("runtime.dist_state.timeframes must not contain duplicates.")
+    if dist_state_enabled and "3m" not in parsed_timeframes:
+        raise ValueError("runtime.dist_state.timeframes must include 3m when dist_state is enabled.")
+    if not isinstance(dist_state_warmup_kline_bars, int) or dist_state_warmup_kline_bars <= 0:
+        raise ValueError("runtime.dist_state.warmup_kline_bars must be > 0.")
+    if (
+        not isinstance(dist_state_warmup_oi_hist_points, int)
+        or dist_state_warmup_oi_hist_points <= 0
+    ):
+        raise ValueError("runtime.dist_state.warmup_oi_hist_points must be > 0.")
+    if not isinstance(dist_state_ready_core_min_bars, int) or dist_state_ready_core_min_bars <= 0:
+        raise ValueError("runtime.dist_state.ready_core_min_bars must be > 0.")
+    if not isinstance(dist_state_ready_p_min_deltas, int) or dist_state_ready_p_min_deltas <= 0:
+        raise ValueError("runtime.dist_state.ready_p_min_deltas must be > 0.")
+    if dist_state_p_availability_mode not in {"strict", "continuous"}:
+        raise ValueError("runtime.dist_state.p_availability_mode must be strict or continuous.")
+    if not isinstance(dist_state_oi_poll_interval_ms, int) or dist_state_oi_poll_interval_ms <= 0:
+        raise ValueError("runtime.dist_state.oi_poll_interval_ms must be > 0.")
+    if not isinstance(dist_state_oi_tolerance_ms, int) or dist_state_oi_tolerance_ms <= 0:
+        raise ValueError("runtime.dist_state.oi_tolerance_ms must be > 0.")
+    if dist_state_oi_time_missing_policy not in {"reject"}:
+        raise ValueError("runtime.dist_state.oi_time_missing_policy must be reject.")
+    if not isinstance(dist_state_oi_verify_enabled, bool):
+        raise ValueError("runtime.dist_state.oi_verify_enabled must be a boolean.")
+    if (
+        not isinstance(dist_state_oi_verify_timeframes, list)
+        or not dist_state_oi_verify_timeframes
+    ):
+        raise ValueError("runtime.dist_state.oi_verify_timeframes must be a non-empty list.")
+    parsed_verify_timeframes: list[Literal["3m", "15m", "1h", "4h"]] = []
+    for timeframe in dist_state_oi_verify_timeframes:
+        if not isinstance(timeframe, str) or timeframe not in allowed_timeframes:
+            raise ValueError(
+                "runtime.dist_state.oi_verify_timeframes must only include 3m, 15m, 1h, 4h."
+            )
+        parsed_verify_timeframes.append(cast(Literal["3m", "15m", "1h", "4h"], timeframe))
+    if len(set(parsed_verify_timeframes)) != len(parsed_verify_timeframes):
+        raise ValueError("runtime.dist_state.oi_verify_timeframes must not contain duplicates.")
+    if not isinstance(dist_state_oi_verify_timeout_ms, int) or dist_state_oi_verify_timeout_ms <= 0:
+        raise ValueError("runtime.dist_state.oi_verify_timeout_ms must be > 0.")
+    if (
+        not isinstance(dist_state_oi_verify_max_rate_per_min, int)
+        or dist_state_oi_verify_max_rate_per_min <= 0
+    ):
+        raise ValueError("runtime.dist_state.oi_verify_max_rate_per_min must be > 0.")
+    if not isinstance(dist_state_oi_quality_window_ms, int) or dist_state_oi_quality_window_ms <= 0:
+        raise ValueError("runtime.dist_state.oi_quality_window_ms must be > 0.")
+    if not isinstance(dist_state_oi_seed_points, int) or dist_state_oi_seed_points <= 0:
+        raise ValueError("runtime.dist_state.oi_seed_points must be > 0.")
+    if not isinstance(dist_state_oi_seed_min_points, int) or dist_state_oi_seed_min_points <= 0:
+        raise ValueError("runtime.dist_state.oi_seed_min_points must be > 0.")
+    if (
+        not isinstance(dist_state_v_scale_window_bars, int)
+        or dist_state_v_scale_window_bars <= 0
+    ):
+        raise ValueError("runtime.dist_state.v_scale_window_bars must be > 0.")
+    if not isinstance(dist_state_v_scale_percentile, (int, float)):
+        raise ValueError("runtime.dist_state.v_scale_percentile must be a number.")
+    if not (0.0 < float(dist_state_v_scale_percentile) < 1.0):
+        raise ValueError("runtime.dist_state.v_scale_percentile must be between 0 and 1.")
+    if not isinstance(dist_state_v_scale_min_samples, int) or dist_state_v_scale_min_samples <= 0:
+        raise ValueError("runtime.dist_state.v_scale_min_samples must be > 0.")
+    for field_name, value in (
+        ("hl_vol_bars", dist_state_hl_vol_bars),
+        ("hl_stretch_bars", dist_state_hl_stretch_bars),
+        ("hl_oi_bars", dist_state_hl_oi_bars),
+        ("hl_atr_short_bars", dist_state_hl_atr_short_bars),
+        ("hl_atr_long_bars", dist_state_hl_atr_long_bars),
+        ("hl_a_bars", dist_state_hl_a_bars),
+        ("k_s", dist_state_k_s),
+        ("k_p", dist_state_k_p),
+        ("k_t", dist_state_k_t),
+    ):
+        if not isinstance(value, (int, float)) or float(value) <= 0:
+            raise ValueError(f"runtime.dist_state.{field_name} must be > 0.")
+    if dist_state_oi_seed_min_points > dist_state_oi_seed_points:
+        raise ValueError(
+            "runtime.dist_state.oi_seed_min_points must be <= runtime.dist_state.oi_seed_points."
+        )
+    if not isinstance(dist_state_tokens_enabled, bool):
+        raise ValueError("runtime.dist_state.tokens_enabled must be a boolean.")
+    if not isinstance(dist_state_tokens_fail_fast_unknown, bool):
+        raise ValueError("runtime.dist_state.tokens_fail_fast_unknown must be a boolean.")
+    for field_name, value, lo, hi in (
+        ("s_dir_deadband", dist_state_s_dir_deadband, 0.0, 1.0),
+        ("s_ext_enter", dist_state_s_ext_enter, 0.0, 1.0),
+        ("s_ext_exit", dist_state_s_ext_exit, 0.0, 1.0),
+        ("s_revert_min_stretch", dist_state_s_revert_min_stretch, 0.0, 1.0),
+        ("t_exp_enter", dist_state_t_exp_enter, -1.0, 1.0),
+        ("t_exp_exit", dist_state_t_exp_exit, -1.0, 1.0),
+        ("t_comp_enter", dist_state_t_comp_enter, -1.0, 1.0),
+        ("t_comp_exit", dist_state_t_comp_exit, -1.0, 1.0),
+        ("a_cont_enter", dist_state_a_cont_enter, -1.0, 1.0),
+        ("a_cont_exit", dist_state_a_cont_exit, -1.0, 1.0),
+        ("a_revert_enter", dist_state_a_revert_enter, -1.0, 1.0),
+        ("a_revert_exit", dist_state_a_revert_exit, -1.0, 1.0),
+        ("v_low_threshold", dist_state_v_low_threshold, 0.0, 1.0),
+        ("t_rise_threshold", dist_state_t_rise_threshold, 0.0, 1.0),
+        ("s_neut_max", dist_state_s_neut_max, 0.0, 1.0),
+        ("a_neut_max", dist_state_a_neut_max, 0.0, 1.0),
+        ("t_neut_max", dist_state_t_neut_max, 0.0, 1.0),
+        ("v_neut_min", dist_state_v_neut_min, 0.0, 1.0),
+        ("v_neut_max", dist_state_v_neut_max, 0.0, 1.0),
+        ("t_exp_plus", dist_state_t_exp_plus, -1.0, 1.0),
+        ("t_exp_plus_plus", dist_state_t_exp_plus_plus, -1.0, 1.0),
+        ("t_comp_plus", dist_state_t_comp_plus, -1.0, 1.0),
+        ("t_comp_plus_plus", dist_state_t_comp_plus_plus, -1.0, 1.0),
+        ("a_cont_plus", dist_state_a_cont_plus, -1.0, 1.0),
+        ("a_cont_plus_plus", dist_state_a_cont_plus_plus, -1.0, 1.0),
+        ("a_revert_plus", dist_state_a_revert_plus, -1.0, 1.0),
+        ("a_revert_plus_plus", dist_state_a_revert_plus_plus, -1.0, 1.0),
+        ("s_exh_plus", dist_state_s_exh_plus, 0.0, 1.0),
+        ("s_exh_plus_plus", dist_state_s_exh_plus_plus, 0.0, 1.0),
+        ("p_confirm_threshold", dist_state_p_confirm_threshold, 0.0, 1.0),
+    ):
+        if not isinstance(value, (int, float)):
+            raise ValueError(f"runtime.dist_state.{field_name} must be a number.")
+        fv = float(value)
+        if fv != fv:
+            raise ValueError(f"runtime.dist_state.{field_name} must not be NaN.")
+        if not (lo <= fv <= hi):
+            raise ValueError(f"runtime.dist_state.{field_name} must be in [{lo}, {hi}].")
+    for field_name, value in (
+        ("token_min_hold_bars_3m", dist_state_token_min_hold_bars_3m),
+        ("token_min_hold_bars_15m", dist_state_token_min_hold_bars_15m),
+        ("token_min_hold_bars_1h", dist_state_token_min_hold_bars_1h),
+        ("token_min_hold_bars_4h", dist_state_token_min_hold_bars_4h),
+    ):
+        if not isinstance(value, int):
+            raise ValueError(f"runtime.dist_state.{field_name} must be an integer.")
+        if value < 0:
+            raise ValueError(f"runtime.dist_state.{field_name} must be >= 0.")
+    if not (float(dist_state_t_exp_enter) > float(dist_state_t_exp_exit)):
+        raise ValueError("runtime.dist_state.t_exp_enter must be > t_exp_exit.")
+    if not (float(dist_state_t_comp_enter) < float(dist_state_t_comp_exit)):
+        raise ValueError("runtime.dist_state.t_comp_enter must be < t_comp_exit.")
+    if not (float(dist_state_a_cont_enter) > float(dist_state_a_cont_exit)):
+        raise ValueError("runtime.dist_state.a_cont_enter must be > a_cont_exit.")
+    if not (float(dist_state_a_revert_enter) < float(dist_state_a_revert_exit)):
+        raise ValueError("runtime.dist_state.a_revert_enter must be < a_revert_exit.")
+    if not (float(dist_state_s_ext_enter) > float(dist_state_s_ext_exit)):
+        raise ValueError("runtime.dist_state.s_ext_enter must be > s_ext_exit.")
+    if not (float(dist_state_t_exp_plus_plus) >= float(dist_state_t_exp_plus)):
+        raise ValueError("runtime.dist_state.t_exp_plus_plus must be >= t_exp_plus.")
+    if not (float(dist_state_t_comp_plus_plus) <= float(dist_state_t_comp_plus)):
+        raise ValueError("runtime.dist_state.t_comp_plus_plus must be <= t_comp_plus.")
+    if not (float(dist_state_a_cont_plus_plus) >= float(dist_state_a_cont_plus)):
+        raise ValueError("runtime.dist_state.a_cont_plus_plus must be >= a_cont_plus.")
+    if not (float(dist_state_a_revert_plus_plus) <= float(dist_state_a_revert_plus)):
+        raise ValueError("runtime.dist_state.a_revert_plus_plus must be <= a_revert_plus.")
+    if not (float(dist_state_s_exh_plus_plus) >= float(dist_state_s_exh_plus)):
+        raise ValueError("runtime.dist_state.s_exh_plus_plus must be >= s_exh_plus.")
+    if not (float(dist_state_v_neut_min) <= float(dist_state_v_neut_max)):
+        raise ValueError("runtime.dist_state.v_neut_min must be <= v_neut_max.")
+    if not isinstance(dist_state_narrative_enabled, bool):
+        raise ValueError("runtime.dist_state.narrative_enabled must be a boolean.")
+    if (
+        not isinstance(dist_state_narrative_driver_tf, str)
+        or dist_state_narrative_driver_tf not in allowed_timeframes
+    ):
+        raise ValueError("runtime.dist_state.narrative_driver_tf must be one of 3m, 15m, 1h, 4h.")
+    if dist_state_narrative_driver_tf not in parsed_timeframes:
+        raise ValueError(
+            "runtime.dist_state.narrative_driver_tf must be one of runtime.dist_state.timeframes."
+        )
+    if (
+        not isinstance(dist_state_narrative_linger_reminder_closes, int)
+        or dist_state_narrative_linger_reminder_closes < 0
+    ):
+        raise ValueError("runtime.dist_state.narrative_linger_reminder_closes must be >= 0.")
+    if not isinstance(dist_state_narrative_max_chars, int) or dist_state_narrative_max_chars < 16:
+        raise ValueError("runtime.dist_state.narrative_max_chars must be >= 16.")
+    if not isinstance(dist_state_narrative_secondary_min_ratio, (int, float)):
+        raise ValueError("runtime.dist_state.narrative_secondary_min_ratio must be a number.")
+    if not isinstance(dist_state_narrative_dir_ratio_min, (int, float)):
+        raise ValueError("runtime.dist_state.narrative_dir_ratio_min must be a number.")
+    if not (0.0 <= float(dist_state_narrative_secondary_min_ratio) <= 1.0):
+        raise ValueError("runtime.dist_state.narrative_secondary_min_ratio must be in [0, 1].")
+    if not (0.0 <= float(dist_state_narrative_dir_ratio_min) <= 1.0):
+        raise ValueError("runtime.dist_state.narrative_dir_ratio_min must be in [0, 1].")
 
     dot_thresholds = _parse_thresholds(
         binning_dot_size_thresholds, "runtime.binning_dot_size_thresholds"
@@ -718,6 +1082,87 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         tui_frame_inset_px=int(tui_frame_inset_px),
         tui_frame_band_inner=float(tui_frame_band_inner),
         tui_frame_band_outer=float(tui_frame_band_outer),
+        tui_show_dev_panel=bool(tui_show_dev_panel),
+        dist_state=DistStateRuntimeConfig(
+            enabled=bool(dist_state_enabled),
+            symbol=normalize_symbol(dist_state_symbol),
+            source_id=dist_state_source_id.strip(),
+            timeframes=tuple(parsed_timeframes),
+            warmup_kline_bars=int(dist_state_warmup_kline_bars),
+            warmup_oi_hist_points=int(dist_state_warmup_oi_hist_points),
+            ready_core_min_bars=int(dist_state_ready_core_min_bars),
+            ready_p_min_deltas=int(dist_state_ready_p_min_deltas),
+            p_availability_mode=cast(Literal["strict", "continuous"], dist_state_p_availability_mode),
+            oi_poll_interval_ms=int(dist_state_oi_poll_interval_ms),
+            oi_tolerance_ms=int(dist_state_oi_tolerance_ms),
+            oi_time_missing_policy=cast(
+                Literal["reject"],
+                dist_state_oi_time_missing_policy,
+            ),
+            oi_verify_enabled=bool(dist_state_oi_verify_enabled),
+            oi_verify_timeframes=tuple(parsed_verify_timeframes),
+            oi_verify_timeout_ms=int(dist_state_oi_verify_timeout_ms),
+            oi_verify_max_rate_per_min=int(dist_state_oi_verify_max_rate_per_min),
+            oi_quality_window_ms=int(dist_state_oi_quality_window_ms),
+            oi_seed_points=int(dist_state_oi_seed_points),
+            oi_seed_min_points=int(dist_state_oi_seed_min_points),
+            v_scale_window_bars=int(dist_state_v_scale_window_bars),
+            v_scale_percentile=float(dist_state_v_scale_percentile),
+            v_scale_min_samples=int(dist_state_v_scale_min_samples),
+            hl_vol_bars=float(dist_state_hl_vol_bars),
+            hl_stretch_bars=float(dist_state_hl_stretch_bars),
+            hl_oi_bars=float(dist_state_hl_oi_bars),
+            hl_atr_short_bars=float(dist_state_hl_atr_short_bars),
+            hl_atr_long_bars=float(dist_state_hl_atr_long_bars),
+            hl_a_bars=float(dist_state_hl_a_bars),
+            k_s=float(dist_state_k_s),
+            k_p=float(dist_state_k_p),
+            k_t=float(dist_state_k_t),
+            tokens_enabled=bool(dist_state_tokens_enabled),
+            tokens_fail_fast_unknown=bool(dist_state_tokens_fail_fast_unknown),
+            s_dir_deadband=float(dist_state_s_dir_deadband),
+            s_ext_enter=float(dist_state_s_ext_enter),
+            s_ext_exit=float(dist_state_s_ext_exit),
+            s_revert_min_stretch=float(dist_state_s_revert_min_stretch),
+            t_exp_enter=float(dist_state_t_exp_enter),
+            t_exp_exit=float(dist_state_t_exp_exit),
+            t_comp_enter=float(dist_state_t_comp_enter),
+            t_comp_exit=float(dist_state_t_comp_exit),
+            a_cont_enter=float(dist_state_a_cont_enter),
+            a_cont_exit=float(dist_state_a_cont_exit),
+            a_revert_enter=float(dist_state_a_revert_enter),
+            a_revert_exit=float(dist_state_a_revert_exit),
+            v_low_threshold=float(dist_state_v_low_threshold),
+            t_rise_threshold=float(dist_state_t_rise_threshold),
+            s_neut_max=float(dist_state_s_neut_max),
+            a_neut_max=float(dist_state_a_neut_max),
+            t_neut_max=float(dist_state_t_neut_max),
+            v_neut_min=float(dist_state_v_neut_min),
+            v_neut_max=float(dist_state_v_neut_max),
+            t_exp_plus=float(dist_state_t_exp_plus),
+            t_exp_plus_plus=float(dist_state_t_exp_plus_plus),
+            t_comp_plus=float(dist_state_t_comp_plus),
+            t_comp_plus_plus=float(dist_state_t_comp_plus_plus),
+            a_cont_plus=float(dist_state_a_cont_plus),
+            a_cont_plus_plus=float(dist_state_a_cont_plus_plus),
+            a_revert_plus=float(dist_state_a_revert_plus),
+            a_revert_plus_plus=float(dist_state_a_revert_plus_plus),
+            s_exh_plus=float(dist_state_s_exh_plus),
+            s_exh_plus_plus=float(dist_state_s_exh_plus_plus),
+            p_confirm_threshold=float(dist_state_p_confirm_threshold),
+            token_min_hold_bars_3m=int(dist_state_token_min_hold_bars_3m),
+            token_min_hold_bars_15m=int(dist_state_token_min_hold_bars_15m),
+            token_min_hold_bars_1h=int(dist_state_token_min_hold_bars_1h),
+            token_min_hold_bars_4h=int(dist_state_token_min_hold_bars_4h),
+            narrative_enabled=bool(dist_state_narrative_enabled),
+            narrative_driver_tf=cast(
+                Literal["3m", "15m", "1h", "4h"], dist_state_narrative_driver_tf
+            ),
+            narrative_linger_reminder_closes=int(dist_state_narrative_linger_reminder_closes),
+            narrative_max_chars=int(dist_state_narrative_max_chars),
+            narrative_secondary_min_ratio=float(dist_state_narrative_secondary_min_ratio),
+            narrative_dir_ratio_min=float(dist_state_narrative_dir_ratio_min),
+        ),
     )
 
 

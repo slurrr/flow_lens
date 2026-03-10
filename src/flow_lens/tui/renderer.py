@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import curses
+import locale
 import time
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from flow_lens.adapters.base import AdapterStats, AdapterStatus
+from flow_lens.dist_state.models import DistPanelSnapshot, DistRowSnapshot, DistTimeframe
 from flow_lens.engine.state_engine import StateSnapshot
 from flow_lens.tui.metrics import LiveMetricsSnapshot
 
@@ -29,6 +31,8 @@ class RendererConfig:
     frame_inset_px: int = 1
     frame_band_inner: float = 0.995
     frame_band_outer: float = 1.005
+    show_dev_panel: bool = True
+    dist_narrative_max_chars: int = 72
     control_baseline_center_suppress_band: float = 0.02
     axis_flash_duration_s: float = 0.25
     axis_flash_cooldown_s: float = 0.75
@@ -55,6 +59,7 @@ class Renderer:
         symbol: str,
         state: StateSnapshot | None,
         *,
+        dist_snapshot: DistPanelSnapshot | None = None,
         status_spot: AdapterStatus | None = None,
         status_perp: AdapterStatus | None = None,
         spot_stats: AdapterStats | None = None,
@@ -191,19 +196,30 @@ class Renderer:
             axis_flash_sign=self._axis_flash_sign if self._axis_flash_active() else 0,
         )
 
-        self._draw_status_bar(
+        dist_bottom = self._draw_dist_panel(
             stdscr,
-            spot_stats=spot_stats,
-            perp_stats=perp_stats,
-            metrics=metrics,
-            state=state,
-            symbol=symbol,
+            dist_snapshot=dist_snapshot,
             map_left=map_left,
             map_right=map_right,
             map_bottom=map_bottom,
             maxy=maxy,
             maxx=maxx,
         )
+        if self._config.show_dev_panel:
+            self._draw_status_bar(
+                stdscr,
+                spot_stats=spot_stats,
+                perp_stats=perp_stats,
+                metrics=metrics,
+                state=state,
+                symbol=symbol,
+                map_left=map_left,
+                map_right=map_right,
+                map_bottom=map_bottom,
+                maxy=maxy,
+                maxx=maxx,
+                top_row=(dist_bottom + 3) if dist_bottom >= 0 else None,
+            )
 
         stdscr.refresh()
 
@@ -233,7 +249,8 @@ class Renderer:
         map_bottom: int,
         maxy: int,
         maxx: int,
-    ) -> None:
+        top_row: int | None = None,
+    ) -> int:
         lines = _status_lines(
             metrics,
             state,
@@ -241,16 +258,16 @@ class Renderer:
             perp_stats,
             spot_stats,
         )
-        top = map_bottom + 4
+        top = top_row if top_row is not None else map_bottom + 4
         if not lines:
-            return
+            return top - 1
         inner_width = min(max(len(line) for line in lines), maxx - 2)
         if inner_width <= 0:
-            return
+            return top - 1
         box_height = len(lines) + 2
         bottom = top + box_height - 1
         if bottom >= maxy:
-            return
+            return top - 1
         x0 = min(max(0, map_left), maxx - (inner_width + 2))
         if x0 < 0:
             x0 = 0
@@ -263,6 +280,102 @@ class Renderer:
             )
             _safe_addstr(stdscr, top + idx, x0 + inner_width + 1, "│")
         _safe_addstr(stdscr, bottom, x0, "└" + "─" * inner_width + "┘")
+        return bottom
+
+    def _draw_dist_panel(
+        self,
+        stdscr: CursesWindow,
+        *,
+        dist_snapshot: DistPanelSnapshot | None,
+        map_left: int,
+        map_right: int,
+        map_bottom: int,
+        maxy: int,
+        maxx: int,
+    ) -> int:
+        if dist_snapshot is None:
+            return -1
+        rows: list[DistRowSnapshot] = []
+        ordered_tfs: tuple[DistTimeframe, ...] = ("3m", "15m", "1h", "4h")
+        for tf in ordered_tfs:
+            row = dist_snapshot.rows.get(tf)
+            if row is not None:
+                rows.append(row)
+        if not rows:
+            return -1
+
+        # If vertical space is tight: drop 4h -> 1h -> 3m, keep 15m last.
+        drop_order = ["4h", "1h", "3m"]
+        top = map_bottom + 5
+        min_panel_rows = 2
+        while rows and top + min_panel_rows + len(rows) - 1 >= maxy:
+            dropped = False
+            for tf in drop_order:
+                idx = next((i for i, row in enumerate(rows) if row.tf == tf), None)
+                if idx is not None:
+                    rows.pop(idx)
+                    dropped = True
+                    break
+            if not dropped:
+                rows.pop()
+        if not rows:
+            return -1
+
+        unicode_tokens = _unicode_tokens_supported()
+        token_modes: tuple[str, ...]
+        if dist_snapshot.tokens_enabled:
+            token_modes = ("full", "base", "none")
+        else:
+            token_modes = ("none",)
+        line_rows: list[str] = []
+        available_width = max(1, maxx - 1)
+        for mode in token_modes:
+            candidate = [_dist_header_line()]
+            for row in rows:
+                candidate.append(
+                    _format_dist_row(
+                        row,
+                        token_mode=mode,
+                        unicode_tokens=unicode_tokens,
+                    )
+                )
+            if max(len(line) for line in candidate) <= available_width:
+                line_rows = candidate
+                break
+            line_rows = candidate
+
+        if not line_rows:
+            return -1
+        table_rows = line_rows
+        narrative_line = _format_dist_narrative_line(
+            dist_snapshot.narrative_text_template,
+            available_width=available_width,
+            max_chars=self._config.dist_narrative_max_chars,
+        )
+        line_rows = list(table_rows)
+        if narrative_line is not None:
+            # Keep a blank spacer row, then center the narrative to table width.
+            table_width = max(len(line) for line in table_rows)
+            centered_narrative = narrative_line.center(table_width)
+            line_rows.extend(["", centered_narrative])
+        panel_height = len(line_rows)
+        bottom = top + panel_height - 1
+        if bottom >= maxy:
+            # Drop narrative first when space is constrained.
+            line_rows = table_rows
+            panel_height = len(line_rows)
+            bottom = top + panel_height - 1
+        if bottom >= maxy:
+            return -1
+        max_len = max(len(line) for line in line_rows)
+        map_width = max(1, map_right - map_left + 1)
+        x0 = max(0, map_left + (map_width - max_len) // 2)
+        if x0 + max_len >= maxx:
+            x0 = max(0, maxx - max_len - 1)
+        x_limit = maxx - 1
+        for idx, line in enumerate(line_rows):
+            _addstr_limited(stdscr, top + idx, x0, line, x_limit)
+        return bottom
 
     def _ensure_colors(self) -> None:
         if self._colors_ready:
@@ -717,6 +830,92 @@ def _status_lines(
     return [line_feeds, line_metrics_1, line_metrics_y, line_metrics_disp, line_control_baseline]
 
 
+def _dist_header_line() -> str:
+    return f"{'TF':<4} {'V':^7} {'S':^7} {'A':^7} {'P':^7} {'T':^7} STATE"
+
+
+def _format_dist_row(
+    row: DistRowSnapshot,
+    *,
+    token_mode: str,
+    unicode_tokens: bool,
+) -> str:
+    prefix = (
+        f"{row.tf:<4} "
+        f"{_dist_unsigned_bar(row.bins.v):<7} "
+        f"{_dist_signed_bar(row.bins.s):<7} "
+        f"{_dist_signed_bar(row.bins.a):<7} "
+        f"{_dist_signed_bar(row.bins.p):<7} "
+        f"{_dist_signed_bar(row.bins.t):<7}"
+    )
+    token_text = _format_dist_token(
+        row.token,
+        row.token_strength if token_mode == "full" else None,
+        unicode_tokens=unicode_tokens,
+    )
+    if token_mode == "none":
+        token_text = ""
+    return f"{prefix} {token_text}"
+
+
+def _format_dist_token(
+    token: str | None,
+    strength: str | None,
+    *,
+    unicode_tokens: bool,
+) -> str:
+    if token is None:
+        return ""
+    rendered = token if unicode_tokens else _ascii_token_fallback(token)
+    if strength:
+        return f"{rendered}{strength}"
+    return rendered
+
+
+def _ascii_token_fallback(token: str) -> str:
+    mapping = {
+        "CONT↑": "CONT^",
+        "CONT↓": "CONTv",
+        "EXH↑": "EXH^",
+        "EXH↓": "EXHv",
+    }
+    return mapping.get(token, token)
+
+
+def _unicode_tokens_supported() -> bool:
+    return "UTF-8" in locale.getpreferredencoding(False).upper()
+
+
+def _dist_bin_glyph(value: int | None) -> str:
+    if value is None:
+        return "·"
+    palette = "0123456"
+    return palette[_clamp(value, 0, len(palette) - 1)]
+
+
+def _dist_unsigned_bar(value: int | None) -> str:
+    if value is None:
+        return "·······"
+    clamped = _clamp(value, 0, 6)
+    filled = "█" * clamped
+    empty = "·" * (7 - clamped)
+    return f"{filled}{empty}"
+
+
+def _dist_signed_bar(value: int | None) -> str:
+    if value is None:
+        return "···│···"
+    clamped = _clamp(value, 0, 6)
+    if clamped < 3:
+        left = "·" * clamped + "█" * (3 - clamped)
+        return f"{left}│···"
+    if clamped == 3:
+        return "···│···"
+    right_count = clamped - 3
+    right = "█" * right_count + "·" * (3 - right_count)
+    return f"···│{right}"
+
+
 def _fmt_float(value: float | None, digits: int) -> str:
     if value is None:
         return "n/a"
@@ -745,6 +944,24 @@ def _fmt_bool(value: bool | None) -> str:
     if value is None:
         return "n/a"
     return "yes" if value else "no"
+
+
+def _format_dist_narrative_line(
+    text: str | None,
+    *,
+    available_width: int,
+    max_chars: int,
+) -> str | None:
+    if not text:
+        return None
+    limit = min(max_chars, available_width)
+    if limit <= 0:
+        return None
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return "." * limit
+    return text[: limit - 3] + "..."
 
 
 def _sign_value(value: float) -> int:
@@ -790,9 +1007,10 @@ def _sign_with_deadband(value: float, deadband: float) -> int:
 def _addstr_limited(
     stdscr: CursesWindow, y: int, x: int, text: str, maxx: int, attr: int = 0
 ) -> int:
-    if x >= maxx - 1:
+    # maxx is an exclusive right bound.
+    if x >= maxx:
         return x
-    available = maxx - x - 1
+    available = maxx - x
     if available <= 0:
         return x
     chunk = text[:available]
