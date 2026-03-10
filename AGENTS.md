@@ -1,15 +1,47 @@
-# AGENTS.md – Flow Lens
+# AGENTS.md — Flow Lens (Repo Guardrails)
 
 ## Purpose
 
-Flow Lens is a **single-symbol structural flow diagnostic**.  
-It is not a dashboard, signal generator, scanner, or trading system.
+Flow Lens is a **single-symbol market structure trading tool**.
 
-The system exists to answer one question:
+The Lens panel exists to answer:
 
 > **Who is in control, and is their effort effective?**
 
-All design, code, and contributions must preserve this constraint.
+The Distribution State panel exists to answer:
+
+> **What is happening within the distribution geometry (V/S/A/P/T)?**
+
+Everything in this repo must preserve truthfulness.
+
+---
+
+## What This Repo Contains (Current)
+
+Flow Lens is no longer “just the dot”. The TUI contains:
+
+1) **Lens panel (core instrument)** — the dot + sacred visual channels:
+   - X (control), Y (effectiveness), size (force), halo (dispersion), lean (transitional direction).
+
+2) **Lens context layers** (orthogonal, explicitly decided):
+   - **Persisted effectiveness line** `S_t` (temporal context for Y) (see `docs/decisions/FL-0050-persisted-effectiveness-line-and-opposition-gauge.md`).
+   - **Dynamic control baseline line** for X (recent-normal anchor) (see `docs/decisions/FL-0062-dynamic-control-baseline-line.md`).
+   - **UTC midnight control anchor tick** (prior-day anchor) (see `docs/decisions/FL-0063-utc-midnight-control-anchor-tick.md`).
+
+3) **Distribution-state panel (dist-state)** — a separate instrument rendered in addition to the lens:
+   - V/S/A/P/T metrics per timeframe row (`3m`, `15m`, `1h`, `4h`),
+   - deterministic row tokens (bounded vocabulary),
+   - deterministic narrative line (stack-vector classifier).
+
+Specs/decisions for dist-state are binding:
+
+- `docs/decisions/FL-0069-distribution-state-layer-v1.md`
+- `docs/decisions/FL-0070-open-interest-sampling-contract.md`
+- `docs/decisions/FL-0071-dist-state-row-tokens-v1.md`
+- `docs/decisions/FL-0072-dist-state-narrative-layer-v1.md`
+- `SPEC-dist-state-layer-phase1.md`
+- `SPEC-dist-state-layer-phase2-tokens.md`
+- `SPEC-dist-state-layer-phase3-narrative.md`
 
 ---
 
@@ -20,28 +52,28 @@ Flow Lens models **market structure**, not indicators.
 It visualizes:
 
 - **Control** (spot vs perp dominance)
-- **Effectiveness** (is effort moving price)
-- **Force magnitude**
-- **Dispersion of effort**
-- **Direction of structural change**
+- **Effectiveness** (accepted vs rejected effort)
+- **Force magnitude** (participation intensity)
+- **Dispersion** (breadth vs concentration)
+- **Direction of structural change** (transitional only)
 
-The system is a *lens*, not an opinion engine.
+The lens is measurement-first. Summaries (tokens/narrative/reports) must not rewrite the measurement.
 
 ---
 
 ## Visual Semantics (Do Not Violate)
 
-Each visual channel has exactly one meaning.
+Each visual channel has exactly one meaning:
 
 | Channel | Meaning |
-|--------|--------|
+|---|---|
 | Dot position (X) | Control (spot vs perp) |
 | Dot position (Y) | Effectiveness (accepted vs rejected) |
 | Dot size | Force magnitude (total effort intensity) |
 | Halo | Dispersion of contributing effort |
 | Lean | Direction of structural change |
 
-No other variable may be encoded in these channels.
+No other variable may be encoded into these channels.
 
 ---
 
@@ -49,82 +81,67 @@ No other variable may be encoded in these channels.
 
 Flow Lens must NOT include:
 
-- Scores
-- Trade signals
-- Alerts
-- Indicators (RSI, MA, etc.)
-- Multi-symbol dashboards
-- Historical chart overlays
-- Candle/bar logic
-
-If a feature resembles a trading system component, it does not belong here.
+- automated trade signals
+- alerting systems / “if X then do Y” prescriptions
+- indicators (RSI, MA, etc.)
+- multi-symbol dashboards/scanners
+- backtesting/execution components
+- bar/candle logic in the **lens core**
 
 ---
 
-## Architectural Principles
+## Layer Rules (Scope Matters)
 
-1. **Adapters are dumb. Engine is smart.**  
-   Adapters ingest data and output effort events. All interpretation occurs in the engine.
+### 1) Lens core (sacred)
 
-2. **Rolling window model.**  
-   All state derives from the active window Δ. No bar-based logic.
+Scope: adapters → rolling buffer → engine → lens panel.
 
-3. **Normalization before visualization.**  
-   All variables must be dimensionless and bounded before smoothing.
+Rules:
 
-4. **Orthogonality.**  
-   No visual channel may encode more than one semantic dimension.
+- **Adapters are dumb. Engine is smart.** Adapters translate trades into effort events; interpretation belongs in the engine.
+- Rolling-window model only; no bar/candle construction in adapters or engine.
+- No historical persistence inside the engine (no DB-like state).
+- X/Y/size/halo/lean semantics are sacred.
+- Context layers are allowed only when explicitly decided (persistence line, control baseline line).
 
-5. **Perceptual stability over precision.**  
-   The lens favors stable regimes over micro-fluctuations.
+### 2) Dist-state panel (separate instrument)
 
----
+Scope: `src/flow_lens/dist_state/`.
 
-## Invariants
+Rules:
 
-These are not tunables unless explicitly changed by a decision record:
+- Dist-state is rendered **in addition to** the lens; it must not gate/weight/normalize lens computation.
+- Perp coherence is required for perp-native inputs (OI/funding).
+- Token and narrative layers are **deterministic** and **bounded** (safe to replay and reason about).
 
-- Position is sacred (state only)
-- Dot size = per-symbol total effort intensity (see `docs/decisions/FL-0056-dot-size-total-effort-intensity.md`; do not use `sqrt(|X|)` or other dominance-derived sizing)
-- Halo = dispersion (not volume, not agreement)
-- Halo growth is slower than halo contraction
-- Effectiveness is directional and effort-normalized
-- Air pocket guardrail must exist
-- Lean is transitional only
-- Coarse visual binning with hysteresis
-- No bars constructed in adapters
-- Engine holds no historical persistence
+### 3) Reporting / research / agent (observer-only; evolving)
 
----
+Scope: rollups, event logs, daily reports, non-deterministic agent commentary.
 
-## Contribution Rules
+Rules:
 
-Any change must answer:
-
-1. Does this improve the lens’s ability to show structural flow?
-2. Does this introduce interpretation or decision logic?
-3. Does this overload a visual channel?
-
-If (2) or (3) are true, the change likely violates system intent.
-
-All non-trivial changes require a new `FL-XXXX` decision record.
+- Must not modify or gate lens/dist-state computations.
+- Persistence is allowed here (e.g. JSONL) because it is observability/reporting, not engine state.
 
 ---
 
-## Adapter Contract
+## Adapter Contract (Binding)
 
-Adapters must output:
+Adapters must emit one `Event` per trade/print (see `src/flow_lens/models/event.py`) including:
 
-- `symbol`
-- `timestamp`
+- `timestamp` (recv-time; canonical timebase)
+- `source_id`
+- `side_type` (`spot` or `perp`)
+- `aggressor_side` (`buy` or `sell`)
+- `effort_value` (normalized input to the engine; non-negative)
 - `price`
-- `efforts[] = {source_id, side_type, effort_value}`
+- optional `venue_timestamp_ms`, `trade_id` (for hygiene/diagnostics)
 
 Adapters must not:
-- normalize data
-- compute dominance
-- compute effectiveness
-- compute dispersion
+
+- normalize beyond producing `effort_value`
+- compute dominance/effectiveness/dispersion
+- store history
 
 ---
 
@@ -132,72 +149,45 @@ Adapters must not:
 
 1. Semantic correctness
 2. Visual stability
-3. Cross-symbol consistency
+3. Cross-source consistency
 4. Performance
 5. Code elegance
 
 Never sacrifice (1)–(3) for (4) or (5).
 
-Clarification (project maturity / contributor level-set):
-
-- **Precision is still the goal**, but precision is meaningless if it cannot be perceived.
-- Therefore we treat **perceptual stability as a prerequisite for precision**, not a replacement for it.
-- The “correct” framing is:
-  1) semantic correctness (truth),
-  2) perceptual stability (readability of truth at a glance),
-  3) cross-symbol consistency,
-  4) then push precision as far as possible without reintroducing instability.
-
 ---
-
-## Guiding Principle
-
-> **Flow Lens shows how force propagates through market structure.**
-
-If a feature does not serve that principle, it does not belong in this system.
 
 ## Development Environment (Invariant)
 
 - A local virtual environment at `.venv/` is mandatory
-- All tooling must run inside the active `.venv`
-- Install the package in editable mode before development:
-  - `pip install -e .`
+- Install in editable mode before development: `pip install -e .`
 
-Do not modify `sys.path` or bypass the environment.
+---
 
 ## Tooling & Style (Binding)
 
 All Python code MUST adhere to:
-- ruff (using repo ruff.toml)
-- pyright (default settings unless overridden)
+
+- ruff (repo config)
+- pyright (repo config)
 
 Rules:
-- Code that violates ruff or pyright is considered INVALID
-- Fixes must be made at implementation time, not deferred
-- Do NOT add noqa, type: ignore, or suppressions without explicit approval
-- Imports must satisfy isort rules
-- Types must be explicit where required by pyright
 
-Execution Constraint:
-- After any implementation phase, `ruff check .` and `pyright` MUST pass
-- If uncertain how to satisfy a rule, STOP and ASK
+- Code that violates ruff or pyright is invalid.
+- Do not add ignores/suppressions without explicit approval.
 
-Pyright note:
-- Use `scripts/pyright.sh` (runs the bundled Node CLI) to avoid pyright-python wrapper hangs.
-- If you run via Python, use `python scripts/pyright.py`.
+Execution constraint after implementation phases:
+
+- `ruff check .`
+- `scripts/pyright.sh`
+
+---
 
 ## Change Discipline
 
 - No speculative refactors
 - No “helpful” generalizations
-- No semantic interpretation without a spec change
+- No semantic interpretation without a spec + decision where required
 
-When rules are unclear, do not guess.
+When rules are unclear, do not guess: ask and capture a decision.
 
----
-
-## Final Rule
-
-This file sets **guardrails, not logic**.
-
-All domain rules are captured in `docs/decisions`

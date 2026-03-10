@@ -1,173 +1,146 @@
-# Flow Lens – Contributor Guide
+## Flow Lens
 
-Flow Lens is a **market structure diagnostic lens** for crypto trading.
+Flow Lens is a **single-symbol market structure trading tool**.
 
-This system converts raw spot and perp participation data into a normalized, source-agnostic state model that reveals who is in control of price and whether their effort is being accepted or absorbed.
+It ingests spot + perp trade prints across venues, converts them into a common “effort” representation, and renders a
+live structural read of:
 
-It does **not** produce signals, scores, or alerts.  
-It visualizes **flow physics**: who is pushing and whether that effort is working.  
-It renders in a way that gives users **deep insites** into the current **liquidity structure**, designed to help make better trading decisions during different **liquidity regimes**.
+- **control** (who is in control),
+- **effectiveness** (is effort being accepted or rejected),
+- **force** (how intense participation is),
+- **dispersion** (how broad participation is),
+- **direction of change** (transitional only).
 
-This document explains how to contribute without breaking the system’s core semantics.
+This repository also contains a **distribution-state panel** (dist-state) for *effects-only return distribution
+geometry* (V/S/A/P/T), including a deterministic **token layer** and a deterministic cross-timeframe **narrative line**.
+
+The tool is meant to reduce cognitive load for discretionary execution by making structure legible and reviewable.
 
 ---
 
-## What Flow Lens Is
+## What You See In The TUI (Current)
 
-Flow Lens is a **single-symbol structural state instrument**.
+### 1) Lens panel (core instrument)
 
-At any moment it shows:
+The lens is the dot + channels you already know:
 
-| Question | Visual Channel |
-|----------|----------------|
-| Who is in control? | Dot X position |
-| Is the effort working? | Dot Y position |
+| Question | Visual channel |
+|---|---|
+| Who is in control? | Dot X |
+| Is effort working? | Dot Y |
 | How strong is the push? | Dot size |
 | How widely distributed is participation? | Halo |
-| Is the state improving or degrading? | Dot lean |
+| Is state improving/degrading? | Lean |
 
-Everything in the system exists to support these readings.
+Additional orthogonal context layers now present in the lens panel:
+
+- **Persisted effectiveness line** `S_t`: a leaky integrator of instantaneous effectiveness (`Y_raw`) rendered as a
+  horizontal line (see `docs/decisions/FL-0050-persisted-effectiveness-line-and-opposition-gauge.md`).
+- **Dynamic control baseline line**: breakout-gated, two-speed baseline for X (see
+  `docs/decisions/FL-0062-dynamic-control-baseline-line.md`).
+- **UTC midnight control anchor tick**: a prior-day anchor for control comparisons (see
+  `docs/decisions/FL-0063-utc-midnight-control-anchor-tick.md`).
+
+### 2) Dist-state panel (distribution-state instrument)
+
+Dist-state is a separate panel rendered alongside the lens. It does **not** change lens semantics.
+
+It computes a bounded metric set per timeframe row (currently `3m`, `15m`, `1h`, `4h`) for a single perp-coherent
+instrument family (v1: Binance USDT-margined perp):
+
+- `V`: volatility state
+- `S`: stretch (z-extension)
+- `A`: autocorrelation / short-horizon bias
+- `P`: positioning pressure (OI-derived)
+- `T`: transition pressure
+
+On top of the metrics, dist-state includes:
+
+- a deterministic **row token** layer (e.g. `COMP`, `EXP`, `CONT↑/↓`, `EXH↑/↓`, `REVERT`, `NEUT`, with `+`, `++`, `!`)
+  (`docs/decisions/FL-0071-dist-state-row-tokens-v1.md`),
+- a deterministic cross-timeframe **narrative** line that summarizes stack structure via a weighted vector classifier
+  (`docs/decisions/FL-0072-dist-state-narrative-layer-v1.md`).
+
+Specs: `SPEC-dist-state-layer-phase1.md`, `SPEC-dist-state-layer-phase2-tokens.md`,
+`SPEC-dist-state-layer-phase3-narrative.md`.
 
 ---
 
-## What Flow Lens Is Not
+## Architecture (Current)
 
-Do not turn Flow Lens into:
-
-- A dashboard
-- A signal engine
-- A backtester
-- A scanner
-- A charting platform
-- An indicator collection
-
----
-
-## Mental Model
-
-Flow Lens models **force interacting with resistance**.
-
-- **Force** = per-symbol normalized total effort intensity (dot size; see `docs/decisions/FL-0056-dot-size-total-effort-intensity.md`)
-- **Effectiveness** = displacement per unit effort
-- **Dispersion** = how concentrated vs distributed that effort is
-
-The lens does not predict. It describes **structural state**.
-
----
-
-## System Architecture
+### Lens core
 
 ```
-Market Data (WS trades)
-        ↓
-Adapters (dumb)
-        ↓
-Effort Events
-        ↓
-Rolling Event Buffer
-        ↓
+Live market data (WS trades)
+          ↓
+Adapters (translate only)
+          ↓
+Effort events (spot/perp × buy/sell; per-source)
+          ↓
+Rolling event buffer (window Δ)
+          ↓
 Engine (normalization + smoothing)
-        ↓
-State Variables (X, Y, Size, Halo)
-        ↓
-TUI Renderer
+          ↓
+Lens state (X/Y/size/halo/lean + persistence + control baseline)
+          ↓
+TUI renderer
 ```
 
-Adapters only translate raw trades into effort contributions.  
-All market logic lives in the engine.
+### Dist-state panel
+
+```
+Perp market data (klines + OI + funding where used)
+          ↓
+Streaming dist metrics per timeframe row (V/S/A/P/T)
+          ↓
+Deterministic row tokens
+          ↓
+Deterministic narrative line
+          ↓
+TUI renderer (separate panel)
+```
+
+Entry point: `src/flow_lens/main.py`.
 
 ---
 
-## Core Invariants
+## Running
 
-These rules define Flow Lens. Breaking them breaks the tool.
+Create and activate `.venv/`, then:
 
-### Visual invariants
+- install editable: `pip install -e .`
+- run: `python -m flow_lens.main --config config/app.toml`
 
-- Dot position = state only
-- Dot size = force magnitude only (per-symbol total effort intensity; see `docs/decisions/FL-0056-dot-size-total-effort-intensity.md`)
-- Halo = dispersion only
-- Lean = direction of change only
+Diagnostics JSONL:
 
-No visual channel may encode multiple meanings.
-
----
-
-### Structural invariants
-
-- No bar/candle construction
-- Rolling window model only
-- Variables must be normalized and bounded
-- Coarse visual bins with hysteresis
-- Halo growth slower than contraction
-- Air pocket guardrail required
+- lens diagnostics: `--dia` → `logs/flow_lens_diagnostics.jsonl`
+- dist-state diagnostics: `--dist-dia` → `docs/diagnostics/dist_state_diagnostics.jsonl`
 
 ---
 
-## Adapter Rules
+## Repo Map
 
-Adapters must:
-
-- Stream trade-level data
-- Output `{source_id, side_type, effort_value}`
-- Provide a reference price
-- Be declared in `app.toml`
-
-Adapters must NOT:
-
-- Compute indicators
-- Normalize data
-- Infer dominance or effectiveness
-- Store historical data
+- `src/flow_lens/adapters/`: venue websocket adapters (trade → Event translation)
+- `src/flow_lens/engine/`: rolling window buffer + state engine (lens core)
+- `src/flow_lens/tui/`: renderer + panels
+- `src/flow_lens/dist_state/`: dist-state engine/feed/models
+- `config/`: app configs (adapters, symbols, runtime defaults)
+- `docs/decisions/`: decision records (binding semantics)
+- `SPEC-*.md`: implementation specs
+- `docs/reference/`: working notes and internal references
 
 ---
 
-## How to Add a New Adapter
+## Contribution Contract (Short)
 
-1. Add adapter config in `app.toml`
-2. Implement translation from feed → effort events
-3. Ensure:
-   - effort_value ≥ 0
-   - timestamps are accurate
-   - source_id is stable
+Flow Lens is intentionally narrow. Changes must preserve:
 
-No engine changes should be required.
+- **single-symbol focus**
+- **one meaning per visual channel**
+- **rolling window lens core** (no bars/candles in lens adapters/engine)
+- **no feedback from dist-state into lens**
 
----
-
-## How to Add a Feature (Checklist)
-
-Before proposing a change:
-
-- Does it alter how X, Y, size, halo, or lean are defined?
-- Does it introduce interpretation beyond structure?
-- Does it add numeric readouts?
-
-If yes, it likely violates system intent.
-
-All structural changes require a new decision record `FL-XXXX`.
-
----
-
-## What Good Contributions Look Like
-
-- Improving normalization robustness
-- Reducing visual noise
-- Enhancing adapter reliability
-- Making dispersion estimation more accurate
-- Performance improvements without semantic change
-
----
-
-## What Bad Contributions Look Like
-
-- Adding overlays or extra panels
-- Adding alerts or thresholds
-- Adding historical plots
-- Encoding multiple meanings in one visual channel
-- Feature creep toward trading tools
-
----
+All non-trivial semantic changes require a new `docs/decisions/FL-XXXX-*.md`.
 
 ## Guiding Question for Contributors
 
