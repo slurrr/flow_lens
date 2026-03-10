@@ -114,6 +114,12 @@ def _build_engine_config(config_path: Path) -> DistStateConfig:
         token_min_hold_bars_15m=dist.token_min_hold_bars_15m,
         token_min_hold_bars_1h=dist.token_min_hold_bars_1h,
         token_min_hold_bars_4h=dist.token_min_hold_bars_4h,
+        narrative_enabled=dist.narrative_enabled,
+        narrative_driver_tf=dist.narrative_driver_tf,
+        narrative_linger_reminder_closes=dist.narrative_linger_reminder_closes,
+        narrative_max_chars=dist.narrative_max_chars,
+        narrative_secondary_min_ratio=dist.narrative_secondary_min_ratio,
+        narrative_dir_ratio_min=dist.narrative_dir_ratio_min,
     )
 
 

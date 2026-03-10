@@ -469,6 +469,14 @@ def _config_snapshot(config: AppConfig) -> dict[str, object]:
         "dist_state_token_min_hold_bars_15m": config.dist_state.token_min_hold_bars_15m,
         "dist_state_token_min_hold_bars_1h": config.dist_state.token_min_hold_bars_1h,
         "dist_state_token_min_hold_bars_4h": config.dist_state.token_min_hold_bars_4h,
+        "dist_state_narrative_enabled": config.dist_state.narrative_enabled,
+        "dist_state_narrative_driver_tf": config.dist_state.narrative_driver_tf,
+        "dist_state_narrative_linger_reminder_closes": (
+            config.dist_state.narrative_linger_reminder_closes
+        ),
+        "dist_state_narrative_max_chars": config.dist_state.narrative_max_chars,
+        "dist_state_narrative_secondary_min_ratio": config.dist_state.narrative_secondary_min_ratio,
+        "dist_state_narrative_dir_ratio_min": config.dist_state.narrative_dir_ratio_min,
         "effort_floor_multiplier": config.effort_floor_multiplier,
         "effort_floor_ticks": config.effort_floor_ticks,
         "smoothing_dominance_alpha": config.smoothing_dominance_alpha,
@@ -572,6 +580,12 @@ def _effective_config_snapshot(
     dist_state_token_min_hold_bars_15m: int,
     dist_state_token_min_hold_bars_1h: int,
     dist_state_token_min_hold_bars_4h: int,
+    dist_state_narrative_enabled: bool,
+    dist_state_narrative_driver_tf: str,
+    dist_state_narrative_linger_reminder_closes: int,
+    dist_state_narrative_max_chars: int,
+    dist_state_narrative_secondary_min_ratio: float,
+    dist_state_narrative_dir_ratio_min: float,
     source_registry: dict[str, object],
 ) -> dict[str, object]:
     return {
@@ -707,6 +721,12 @@ def _effective_config_snapshot(
         "dist_state_token_min_hold_bars_15m": dist_state_token_min_hold_bars_15m,
         "dist_state_token_min_hold_bars_1h": dist_state_token_min_hold_bars_1h,
         "dist_state_token_min_hold_bars_4h": dist_state_token_min_hold_bars_4h,
+        "dist_state_narrative_enabled": dist_state_narrative_enabled,
+        "dist_state_narrative_driver_tf": dist_state_narrative_driver_tf,
+        "dist_state_narrative_linger_reminder_closes": dist_state_narrative_linger_reminder_closes,
+        "dist_state_narrative_max_chars": dist_state_narrative_max_chars,
+        "dist_state_narrative_secondary_min_ratio": dist_state_narrative_secondary_min_ratio,
+        "dist_state_narrative_dir_ratio_min": dist_state_narrative_dir_ratio_min,
         "effort_floor_multiplier": defaults.effort_floor.multiplier_alpha,
         "effort_floor_ticks": defaults.effort_floor.rolling_window_ticks,
         "smoothing_dominance_alpha": defaults.smoothing.dominance_alpha,
@@ -1185,6 +1205,14 @@ def main() -> None:
         dist_state_token_min_hold_bars_15m=config.dist_state.token_min_hold_bars_15m,
         dist_state_token_min_hold_bars_1h=config.dist_state.token_min_hold_bars_1h,
         dist_state_token_min_hold_bars_4h=config.dist_state.token_min_hold_bars_4h,
+        dist_state_narrative_enabled=config.dist_state.narrative_enabled,
+        dist_state_narrative_driver_tf=config.dist_state.narrative_driver_tf,
+        dist_state_narrative_linger_reminder_closes=(
+            config.dist_state.narrative_linger_reminder_closes
+        ),
+        dist_state_narrative_max_chars=config.dist_state.narrative_max_chars,
+        dist_state_narrative_secondary_min_ratio=config.dist_state.narrative_secondary_min_ratio,
+        dist_state_narrative_dir_ratio_min=config.dist_state.narrative_dir_ratio_min,
         source_registry=requested_source_registry,
     )
     _verify_replay_config_parity(config_requested, config_effective)

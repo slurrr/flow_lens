@@ -326,6 +326,7 @@ def _run(
             frame_band_inner=config.tui_frame_band_inner,
             frame_band_outer=config.tui_frame_band_outer,
             show_dev_panel=config.tui_show_dev_panel,
+            dist_narrative_max_chars=config.dist_state.narrative_max_chars,
             control_baseline_center_suppress_band=config.control_baseline_center_suppress_band,
             axis_flash_duration_s=config.update_window_seconds,
             axis_flash_cooldown_s=config.update_window_seconds,
@@ -400,6 +401,14 @@ def _run(
                     token_min_hold_bars_15m=config.dist_state.token_min_hold_bars_15m,
                     token_min_hold_bars_1h=config.dist_state.token_min_hold_bars_1h,
                     token_min_hold_bars_4h=config.dist_state.token_min_hold_bars_4h,
+                    narrative_enabled=config.dist_state.narrative_enabled,
+                    narrative_driver_tf=config.dist_state.narrative_driver_tf,
+                    narrative_linger_reminder_closes=(
+                        config.dist_state.narrative_linger_reminder_closes
+                    ),
+                    narrative_max_chars=config.dist_state.narrative_max_chars,
+                    narrative_secondary_min_ratio=config.dist_state.narrative_secondary_min_ratio,
+                    narrative_dir_ratio_min=config.dist_state.narrative_dir_ratio_min,
                 )
             )
             dist_engine.warmup()
@@ -497,6 +506,16 @@ def _run(
                     "dist_state_token_min_hold_bars_4h": (
                         config.dist_state.token_min_hold_bars_4h
                     ),
+                    "dist_state_narrative_enabled": config.dist_state.narrative_enabled,
+                    "dist_state_narrative_driver_tf": config.dist_state.narrative_driver_tf,
+                    "dist_state_narrative_linger_reminder_closes": (
+                        config.dist_state.narrative_linger_reminder_closes
+                    ),
+                    "dist_state_narrative_max_chars": config.dist_state.narrative_max_chars,
+                    "dist_state_narrative_secondary_min_ratio": (
+                        config.dist_state.narrative_secondary_min_ratio
+                    ),
+                    "dist_state_narrative_dir_ratio_min": config.dist_state.narrative_dir_ratio_min,
                 },
             )
         else:
@@ -1579,6 +1598,18 @@ class DistStateDiagnosticLogger:
             "token_override_reason": debug.get("token_override_reason"),
             "token_predicate_hits": debug.get("token_predicate_hits"),
             "token_inputs": debug.get("token_inputs"),
+            "narrative_emitted": debug.get("narrative_emitted"),
+            "narrative_emission_reason": debug.get("narrative_emission_reason"),
+            "narrative_state_id": debug.get("narrative_state_id"),
+            "narrative_template_id": debug.get("narrative_template_id"),
+            "narrative_params": debug.get("narrative_params"),
+            "narrative_as_of_close_ms": debug.get("narrative_as_of_close_ms"),
+            "narrative_driver_tf": debug.get("narrative_driver_tf"),
+            "narrative_started_close_ms": debug.get("narrative_started_close_ms"),
+            "narrative_age_closes": debug.get("narrative_age_closes"),
+            "narrative_reason_codes": debug.get("narrative_reason_codes"),
+            "narrative_quality_flags": debug.get("narrative_quality_flags"),
+            "narrative_text_template": debug.get("narrative_text_template"),
             "expected_closes_tf": expected,
             "captured_v_tf": metric_counts["v"],
             "captured_s_tf": metric_counts["s"],
@@ -1588,6 +1619,27 @@ class DistStateDiagnosticLogger:
             **coverage_pct,
         }
         self._file.write(json.dumps(record, separators=(",", ":")) + "\n")
+        if debug.get("narrative_emitted"):
+            narrative_event = {
+                "event_type": "dist_state_narrative",
+                "ts_wall_ms": int(time.time() * 1000),
+                "symbol": event.symbol.upper(),
+                "source_id": event.source_id,
+                "driver_close_ms": debug.get("narrative_as_of_close_ms"),
+                "driver_tf": debug.get("narrative_driver_tf"),
+                "emission_reason": debug.get("narrative_emission_reason"),
+                "narrative_state_id": debug.get("narrative_state_id"),
+                "narrative_template_id": debug.get("narrative_template_id"),
+                "narrative_params": debug.get("narrative_params"),
+                "narrative_started_close_ms": debug.get("narrative_started_close_ms"),
+                "narrative_age_closes": debug.get("narrative_age_closes"),
+                "narrative_reason_codes": debug.get("narrative_reason_codes"),
+                "narrative_quality_flags": debug.get("narrative_quality_flags"),
+                "narrative_text_template": debug.get("narrative_text_template"),
+                "narrative_stack_tokens": debug.get("narrative_stack_tokens"),
+            }
+            self._file.write(json.dumps(narrative_event, separators=(",", ":")) + "\n")
+            self._line_count += 1
         self._file.flush()
         self._line_count += 1
         self._rotate_if_needed()
@@ -1768,6 +1820,14 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "dist_state_token_min_hold_bars_15m": config.dist_state.token_min_hold_bars_15m,
         "dist_state_token_min_hold_bars_1h": config.dist_state.token_min_hold_bars_1h,
         "dist_state_token_min_hold_bars_4h": config.dist_state.token_min_hold_bars_4h,
+        "dist_state_narrative_enabled": config.dist_state.narrative_enabled,
+        "dist_state_narrative_driver_tf": config.dist_state.narrative_driver_tf,
+        "dist_state_narrative_linger_reminder_closes": (
+            config.dist_state.narrative_linger_reminder_closes
+        ),
+        "dist_state_narrative_max_chars": config.dist_state.narrative_max_chars,
+        "dist_state_narrative_secondary_min_ratio": config.dist_state.narrative_secondary_min_ratio,
+        "dist_state_narrative_dir_ratio_min": config.dist_state.narrative_dir_ratio_min,
         "source_registry": source_registry,
     }
 

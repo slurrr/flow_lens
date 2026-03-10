@@ -34,23 +34,52 @@ V1 guardrail (token-first, metric-light):
 - If a specific narrative state truly requires metrics (rare), it must be an explicit, bounded exception in the Phase 3
   mapping and must be called out as metric-influenced (so it is auditable in replays).
 
+Stack-vector aggregation (v1):
+
+- V1 narrative selection summarizes the stack via a weighted class vector:
+  - primary class = argmax(weighted stack vector)
+  - secondary class (runner-up) is always recorded to surface emerging shifts
+- This prevents higher-timeframe “dominance” from hiding lower-timeframe attempts while remaining deterministic.
+
+Runner-up surfacing (v1):
+
+- If the runner-up is sufficiently strong relative to the primary class, v1 template rendering may include an explicit
+  secondary clause (e.g., “Compression coiling … with expansion attempts.”) to surface emerging shifts without an agent.
+- Runner-up is always recorded structurally (e.g. `secondary_class`, `secondary_score`) even when the secondary clause is
+  not rendered.
+
+Metric exception attribution (binding):
+
+- Any metric-influenced narrative-state selection must add a reason code `METRIC_INFLUENCED_STATE` and include the metric
+  predicate name in `narrative_reason_codes`.
+
 ## Canonical output contract (v1)
 
 Narrative output is a structured object:
 
-- `narrative_state_id: str` (bounded; interpreter state, not a market “regime label”)
-- `narrative_template_id: str` (bounded; maps to a short template string)
-- `narrative_params: dict[str, object]` (bounded keys; scalar values only)
-- `narrative_as_of_close_ms: int` (driver close time)
-- `narrative_driver_tf: str` (e.g. `"15m"`)
-- `narrative_started_close_ms: int` (when the current narrative state began)
-- `narrative_age_closes: int` (driver closes since start)
+- `narrative_state_id: str | None` (bounded; interpreter state, not a market “regime label”; `None` means no narrative)
+- `narrative_template_id: str | None` (bounded; maps to a short template string; `None` when no narrative)
+- `narrative_params: dict[str, NarrativeParamValue]` (bounded keys; values are bounded and typed)
+- `narrative_as_of_close_ms: int | None` (driver close time; `None` until first driver evaluation)
+- `narrative_driver_tf: str | None` (e.g. `"15m"`; `None` until configured/enabled)
+- `narrative_started_close_ms: int | None` (when the current narrative state began; `None` when no narrative)
+- `narrative_age_closes: int | None` (driver closes since start; `None` when no narrative)
 - `narrative_reason_codes: list[str]` (bounded; why this narrative is active)
 - `narrative_quality_flags: list[str]` (bounded; missingness/conflict flags; e.g. `p_missing_streak`)
 
+Param value types (binding):
+
+- `NarrativeScalar = str | int | float | bool | None`
+- `NarrativeParamValue = NarrativeScalar | list[str] | dict[str, float]`
+
+Structured params (binding):
+
+- Phase 3 explicitly permits small structured values in `narrative_params` when the mapping requires them (e.g.
+  `support_tfs: list[str]`, `stack_vector: dict[str, float]`).
+
 Renderer output (non-canonical):
 
-- `narrative_text_template: str` (rendered template string; single sentence)
+- `narrative_text_template: str | None` (rendered template string; single sentence; `None` when no narrative)
 - reserved for future: `narrative_text_agent: str | None`
 
 ## Update rule (v1)
@@ -58,7 +87,9 @@ Renderer output (non-canonical):
 The interpreter must be deterministic and must update on a fixed cadence:
 
 - Evaluate narrative on each **driver timeframe close** using the latest available per-row token snapshots.
-- Emit a new narrative output only when the **narrative state changes**, or when a configured “linger reminder” triggers.
+- Advance `narrative_as_of_close_ms` (and derived `narrative_age_closes`) on each driver close evaluation.
+- Emit/log a new narrative output only when the **narrative state changes**, or when a configured “linger reminder”
+  triggers.
 
 ## Agent-ready extension point (future)
 

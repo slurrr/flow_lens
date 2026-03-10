@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
+from typing import cast
 
 from flow_lens.dist_state.models import (
     DistAvailabilityMode,
@@ -20,11 +21,16 @@ from flow_lens.dist_state.models import (
     DistRowToken,
     DistTimeframe,
     DistTimeMissingPolicy,
+    NarrativeParamValue,
 )
 
 LOGGER = logging.getLogger(__name__)
 EPSILON = 1e-12
 BIN_LEVELS = 7
+_NARRATIVE_CLASS_PRECEDENCE = ("EXP", "EXH", "CONT", "REVERT", "COMP", "NEUT")
+_NARRATIVE_VECTOR_KEYS = ("EXP", "EXH", "CONT", "REVERT", "COMP", "NEUT")
+_NARRATIVE_TF_WEIGHT = {"3m": 1.0, "15m": 1.5, "1h": 2.0, "4h": 2.5}
+_NARRATIVE_TF_ORDER = {"3m": 0, "15m": 1, "1h": 2, "4h": 3}
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,12 @@ class DistStateConfig:
     token_min_hold_bars_15m: int
     token_min_hold_bars_1h: int
     token_min_hold_bars_4h: int
+    narrative_enabled: bool
+    narrative_driver_tf: DistTimeframe
+    narrative_linger_reminder_closes: int
+    narrative_max_chars: int
+    narrative_secondary_min_ratio: float
+    narrative_dir_ratio_min: float
 
 
 @dataclass
@@ -133,6 +145,21 @@ class _CloseSelection:
     source: str | None
 
 
+@dataclass
+class _NarrativeState:
+    state_id: str | None = None
+    template_id: str | None = None
+    params: dict[str, NarrativeParamValue] = field(default_factory=dict)
+    as_of_close_ms: int | None = None
+    driver_tf: DistTimeframe | None = None
+    started_close_ms: int | None = None
+    age_closes: int | None = None
+    reason_codes: list[str] = field(default_factory=list)
+    quality_flags: list[str] = field(default_factory=list)
+    text_template: str | None = None
+    text_agent: str | None = None
+
+
 class DistStateEngine:
     def __init__(self, config: DistStateConfig) -> None:
         self._config = config
@@ -154,6 +181,7 @@ class DistStateEngine:
         self._oi_initialized = False
         self._oi_bootstrap_source: str | None = None
         self._oi_bootstrap_age_ms: int | None = None
+        self._narrative = _NarrativeState(driver_tf=config.narrative_driver_tf)
 
     def warmup(self) -> None:
         for tf in self._config.timeframes:
@@ -197,6 +225,9 @@ class DistStateEngine:
 
         selection, selection_debug = self._select_snapshot_for_close(event)
         p_available, p_missing_reason, token_debug = self._apply_close(row, event, selection)
+        narrative_debug: dict[str, object] = {}
+        if self._config.narrative_enabled and event.tf == self._config.narrative_driver_tf:
+            narrative_debug = self._evaluate_narrative(event.kline_close_ms)
         snapshot = self.snapshot()
         row_snapshot = snapshot.rows[event.tf]
 
@@ -249,6 +280,7 @@ class DistStateEngine:
             "token_override_reason": token_debug["override_reason"],
             "token_predicate_hits": token_debug["predicate_hits"],
             "token_inputs": token_debug["inputs"],
+            **narrative_debug,
             **selection_debug,
         }
 
@@ -278,7 +310,91 @@ class DistStateEngine:
             last_oi_ts_recv_ms=self._last_oi_ts_recv_ms,
             last_oi_value=self._last_oi_value,
             tokens_enabled=self._config.tokens_enabled,
+            narrative_state_id=self._narrative.state_id,
+            narrative_template_id=self._narrative.template_id,
+            narrative_params=dict(self._narrative.params),
+            narrative_as_of_close_ms=self._narrative.as_of_close_ms,
+            narrative_driver_tf=self._narrative.driver_tf,
+            narrative_started_close_ms=self._narrative.started_close_ms,
+            narrative_age_closes=self._narrative.age_closes,
+            narrative_reason_codes=list(self._narrative.reason_codes),
+            narrative_quality_flags=list(self._narrative.quality_flags),
+            narrative_text_template=self._narrative.text_template,
+            narrative_text_agent=self._narrative.text_agent,
         )
+
+    def _evaluate_narrative(self, driver_close_ms: int) -> dict[str, object]:
+        result = _compute_narrative_payload(
+            rows=self._rows,
+            driver_tf=self._config.narrative_driver_tf,
+            dir_ratio_min=self._config.narrative_dir_ratio_min,
+            secondary_min_ratio=self._config.narrative_secondary_min_ratio,
+        )
+        prev_state = self._narrative.state_id
+        new_state = result["narrative_state_id"]
+        state_changed = new_state != prev_state
+        if state_changed:
+            started_close_ms = driver_close_ms
+            age_closes = 1 if new_state is not None else None
+        else:
+            started_close_ms = self._narrative.started_close_ms
+            if new_state is None:
+                age_closes = None
+            else:
+                prior_age = self._narrative.age_closes or 0
+                age_closes = prior_age + 1
+        self._narrative.state_id = cast(str | None, result["narrative_state_id"])
+        self._narrative.template_id = cast(str | None, result["narrative_template_id"])
+        self._narrative.params = cast(dict[str, NarrativeParamValue], result["narrative_params"])
+        self._narrative.as_of_close_ms = driver_close_ms
+        self._narrative.driver_tf = self._config.narrative_driver_tf
+        self._narrative.started_close_ms = started_close_ms
+        self._narrative.age_closes = age_closes
+        self._narrative.reason_codes = cast(list[str], result["narrative_reason_codes"])
+        self._narrative.quality_flags = cast(list[str], result["narrative_quality_flags"])
+        self._narrative.text_template = cast(str | None, result["narrative_text_template"])
+        self._narrative.text_agent = None
+
+        emitted = state_changed
+        if (
+            not emitted
+            and self._config.narrative_linger_reminder_closes > 0
+            and self._narrative.state_id is not None
+            and self._narrative.age_closes is not None
+            and self._narrative.age_closes > 0
+            and self._narrative.age_closes % self._config.narrative_linger_reminder_closes == 0
+        ):
+            emitted = True
+
+        stack_tokens = {
+            tf: {
+                "token": row.token,
+                "token_strength": row.token_strength,
+                "ready_core": _is_ready_core_row(row, self._config.ready_core_min_bars, self._config.v_scale_min_samples),
+                "ready_p": row.oi_var_initialized and row.oi_deltas_seen >= self._config.ready_p_min_deltas,
+                "p": row.metrics.p,
+            }
+            for tf, row in self._rows.items()
+        }
+
+        return {
+            "narrative_emitted": emitted,
+            "narrative_emission_reason": (
+                "state_change" if state_changed else ("linger_reminder" if emitted else None)
+            ),
+            "narrative_state_id": self._narrative.state_id,
+            "narrative_template_id": self._narrative.template_id,
+            "narrative_params": dict(self._narrative.params),
+            "narrative_as_of_close_ms": self._narrative.as_of_close_ms,
+            "narrative_driver_tf": self._narrative.driver_tf,
+            "narrative_started_close_ms": self._narrative.started_close_ms,
+            "narrative_age_closes": self._narrative.age_closes,
+            "narrative_reason_codes": list(self._narrative.reason_codes),
+            "narrative_quality_flags": list(self._narrative.quality_flags),
+            "narrative_text_template": self._narrative.text_template,
+            "narrative_text_agent": self._narrative.text_agent,
+            "narrative_stack_tokens": stack_tokens,
+        }
 
     def _warmup_klines(self, tf: DistTimeframe) -> None:
         params = {
@@ -985,3 +1101,296 @@ def _guard_token(token: DistRowToken | None, fail_fast_unknown: bool) -> DistRow
         raise ValueError(f"Unsupported dist-state token: {token}")
     LOGGER.warning("Unsupported dist-state token=%s; mapping to None", token)
     return None
+
+
+def _compute_narrative_payload(
+    *,
+    rows: dict[DistTimeframe, _DistRowState],
+    driver_tf: DistTimeframe,
+    dir_ratio_min: float,
+    secondary_min_ratio: float,
+) -> dict[str, object]:
+    vector = {key: 0.0 for key in _NARRATIVE_VECTOR_KEYS}
+    class_members: dict[str, list[tuple[DistTimeframe, float, DistRowToken, str | None]]] = {
+        key: [] for key in _NARRATIVE_VECTOR_KEYS
+    }
+    token_classes: list[tuple[str, DistRowToken]] = []
+    instability_weight = 0.0
+    for tf in sorted(rows.keys(), key=lambda item: _NARRATIVE_TF_ORDER[item]):
+        row = rows[tf]
+        if row.token is None:
+            continue
+        klass = _token_to_class(row.token)
+        if klass is None:
+            continue
+        mult = _strength_multiplier(row.token_strength)
+        weight = _NARRATIVE_TF_WEIGHT[tf] * mult
+        vector[klass] += weight
+        class_members[klass].append((tf, weight, row.token, row.token_strength))
+        token_classes.append((klass, row.token))
+        if row.token_strength is not None and "!" in row.token_strength:
+            instability_weight += weight
+
+    primary_class, primary_score = _argmax_class(vector, exclude=None)
+    secondary_class, secondary_score = _argmax_class(vector, exclude=primary_class)
+    if primary_score <= 0.0:
+        return {
+            "narrative_state_id": None,
+            "narrative_template_id": None,
+            "narrative_params": {},
+            "narrative_reason_codes": [],
+            "narrative_quality_flags": [],
+            "narrative_text_template": None,
+        }
+
+    direction = _class_direction(class_members[primary_class], dir_ratio_min)
+    representative_tf = _representative_tf(class_members[primary_class])
+    support_tfs = [tf for tf, _, _, _ in sorted(class_members[primary_class], key=lambda it: _NARRATIVE_TF_ORDER[it[0]], reverse=True)]
+    confidence = (primary_score - secondary_score) / primary_score if primary_score > 0.0 else 0.0
+    denom = primary_score + secondary_score
+    if denom > 0.0:
+        instability_ratio = max(0.0, min(1.0, instability_weight / denom))
+        confidence *= 1.0 - (0.2 * instability_ratio)
+    quality_flags = _narrative_quality_flags(rows, driver_tf, token_classes)
+    state_id, template_id = _map_narrative_state(primary_class, direction)
+    secondary_direction = _class_direction(class_members[secondary_class], dir_ratio_min)
+    secondary_phrase = None
+    secondary_ratio = secondary_score / primary_score if primary_score > 0.0 else 0.0
+    include_secondary = (
+        primary_score > 0.0
+        and secondary_score > 0.0
+        and secondary_class != "NEUT"
+        and secondary_ratio >= secondary_min_ratio
+    )
+    if include_secondary:
+        secondary_phrase = _secondary_phrase(secondary_class, secondary_direction)
+        template_id = f"{template_id}_WITH_SECONDARY"
+    reason_codes = [f"PRIMARY_CLASS_{primary_class}"]
+    params: dict[str, NarrativeParamValue] = {
+        "primary_class": primary_class,
+        "secondary_class": secondary_class,
+        "primary_score": primary_score,
+        "secondary_score": secondary_score,
+        "confidence": confidence,
+        "direction": direction,
+        "secondary_direction": secondary_direction,
+        "secondary_phrase": secondary_phrase,
+        "representative_tf": representative_tf,
+        "support_tfs": support_tfs,
+        "stack_vector": {key: float(vector[key]) for key in _NARRATIVE_VECTOR_KEYS},
+    }
+    text = _render_narrative_text(template_id, params)
+    return {
+        "narrative_state_id": state_id,
+        "narrative_template_id": template_id,
+        "narrative_params": params,
+        "narrative_reason_codes": reason_codes,
+        "narrative_quality_flags": quality_flags,
+        "narrative_text_template": text,
+    }
+
+
+def _argmax_class(vector: dict[str, float], *, exclude: str | None) -> tuple[str, float]:
+    best_class = "NEUT"
+    best_score = -1.0
+    for klass in _NARRATIVE_CLASS_PRECEDENCE:
+        if klass == exclude:
+            continue
+        score = vector.get(klass, 0.0)
+        if score > best_score:
+            best_class = klass
+            best_score = score
+    return best_class, best_score
+
+
+def _token_to_class(token: DistRowToken) -> str | None:
+    mapping = {
+        "EXP": "EXP",
+        "EXH↑": "EXH",
+        "EXH↓": "EXH",
+        "CONT↑": "CONT",
+        "CONT↓": "CONT",
+        "REVERT": "REVERT",
+        "COMP": "COMP",
+        "NEUT": "NEUT",
+    }
+    return mapping.get(token)
+
+
+def _strength_multiplier(token_strength: str | None) -> float:
+    if token_strength is None:
+        return 1.0
+    if "++" in token_strength:
+        return 2.0
+    if "+" in token_strength:
+        return 1.5
+    return 1.0
+
+
+def _class_direction(
+    members: list[tuple[DistTimeframe, float, DistRowToken, str | None]],
+    min_ratio: float,
+) -> str | None:
+    if not members:
+        return None
+    dir_sum = 0.0
+    total_weight = 0.0
+    for _, weight, token, _ in members:
+        sign = _token_dir_sign(token)
+        if sign is None:
+            continue
+        dir_sum += float(sign) * weight
+        total_weight += weight
+    if total_weight <= 0.0:
+        return None
+    ratio = abs(dir_sum) / total_weight
+    if ratio < min_ratio:
+        return None
+    return "UP" if dir_sum > 0.0 else "DOWN"
+
+
+def _token_dir_sign(token: DistRowToken) -> int | None:
+    if token in {"CONT↑", "EXH↑"}:
+        return 1
+    if token in {"CONT↓", "EXH↓"}:
+        return -1
+    return None
+
+
+def _representative_tf(
+    members: list[tuple[DistTimeframe, float, DistRowToken, str | None]],
+) -> str | None:
+    if not members:
+        return None
+    best = sorted(members, key=lambda it: (it[1], _NARRATIVE_TF_ORDER[it[0]]), reverse=True)[0]
+    return best[0]
+
+
+def _narrative_quality_flags(
+    rows: dict[DistTimeframe, _DistRowState],
+    driver_tf: DistTimeframe,
+    token_classes: list[tuple[str, DistRowToken]],
+) -> list[str]:
+    flags: list[str] = []
+    driver_row = rows.get(driver_tf)
+    if (
+        driver_row is not None
+        and driver_row.oi_var_initialized
+        and driver_row.oi_deltas_seen >= 1
+        and driver_row.metrics.p is None
+    ):
+        flags.append("P_MISSING_DRIVER")
+    if any(
+        row.oi_var_initialized and row.oi_deltas_seen >= 1 and row.metrics.p is None
+        for row in rows.values()
+    ):
+        flags.append("P_MISSING_ANY")
+    has_cont_up = any(token == "CONT↑" for _, token in token_classes)
+    has_cont_down = any(token == "CONT↓" for _, token in token_classes)
+    has_exh_up = any(token == "EXH↑" for _, token in token_classes)
+    has_exh_down = any(token == "EXH↓" for _, token in token_classes)
+    if has_cont_up and has_cont_down:
+        flags.append("DIR_CONFLICT_CONT")
+    if has_exh_up and has_exh_down:
+        flags.append("DIR_CONFLICT_EXH")
+    return flags
+
+
+def _map_narrative_state(primary_class: str, direction: str | None) -> tuple[str, str]:
+    if primary_class == "EXP":
+        return "N_EXPANSION_ACTIVE", "TPL_EXPANSION_ACTIVE"
+    if primary_class == "EXH":
+        if direction == "UP":
+            return "N_EXTENSION_DECAYING_UP", "TPL_EXTENSION_DECAYING_UP"
+        if direction == "DOWN":
+            return "N_EXTENSION_DECAYING_DOWN", "TPL_EXTENSION_DECAYING_DOWN"
+        return "N_EXTENSION_DECAYING", "TPL_EXTENSION_DECAYING"
+    if primary_class == "CONT":
+        if direction == "UP":
+            return "N_CONTINUATION_TRYING_UP", "TPL_CONTINUATION_TRYING_UP"
+        if direction == "DOWN":
+            return "N_CONTINUATION_TRYING_DOWN", "TPL_CONTINUATION_TRYING_DOWN"
+        return "N_CONTINUATION_TRYING", "TPL_CONTINUATION_TRYING"
+    if primary_class == "REVERT":
+        return "N_REVERSION_ACTIVE", "TPL_REVERSION_ACTIVE"
+    if primary_class == "COMP":
+        return "N_COMPRESSION_COILING", "TPL_COMPRESSION_COILING"
+    return "N_QUIET_NEUTRAL", "TPL_QUIET_NEUTRAL"
+
+
+def _secondary_phrase(klass: str, direction: str | None) -> str | None:
+    if klass == "EXP":
+        return "expansion attempts"
+    if klass == "COMP":
+        return "compression pressure"
+    if klass == "REVERT":
+        return "reversion pressure"
+    if klass == "EXH":
+        if direction == "UP":
+            return "extension decay ↑"
+        if direction == "DOWN":
+            return "extension decay ↓"
+        return "extension decay"
+    if klass == "CONT":
+        if direction == "UP":
+            return "continuation pressure ↑"
+        if direction == "DOWN":
+            return "continuation pressure ↓"
+        return "continuation pressure"
+    return None
+
+
+def _render_narrative_text(
+    template_id: str,
+    params: dict[str, NarrativeParamValue],
+) -> str | None:
+    representative_tf = cast(str | None, params.get("representative_tf"))
+    secondary_phrase = cast(str | None, params.get("secondary_phrase"))
+    templates = {
+        "TPL_EXPANSION_ACTIVE": f"Expansion active ({representative_tf}).",
+        "TPL_EXTENSION_DECAYING_UP": f"Extension decaying ↑ ({representative_tf}).",
+        "TPL_EXTENSION_DECAYING_DOWN": f"Extension decaying ↓ ({representative_tf}).",
+        "TPL_EXTENSION_DECAYING": f"Extension decaying ({representative_tf}).",
+        "TPL_CONTINUATION_TRYING_UP": f"Continuation bias ↑ ({representative_tf}).",
+        "TPL_CONTINUATION_TRYING_DOWN": f"Continuation bias ↓ ({representative_tf}).",
+        "TPL_CONTINUATION_TRYING": f"Continuation bias ({representative_tf}).",
+        "TPL_REVERSION_ACTIVE": f"Reversion active ({representative_tf}).",
+        "TPL_COMPRESSION_COILING": f"Compression coiling ({representative_tf}).",
+        "TPL_QUIET_NEUTRAL": "Quiet neutral.",
+        "TPL_EXPANSION_ACTIVE_WITH_SECONDARY": (
+            f"Expansion active ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_EXTENSION_DECAYING_UP_WITH_SECONDARY": (
+            f"Extension decaying ↑ ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_EXTENSION_DECAYING_DOWN_WITH_SECONDARY": (
+            f"Extension decaying ↓ ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_EXTENSION_DECAYING_WITH_SECONDARY": (
+            f"Extension decaying ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_CONTINUATION_TRYING_UP_WITH_SECONDARY": (
+            f"Continuation bias ↑ ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_CONTINUATION_TRYING_DOWN_WITH_SECONDARY": (
+            f"Continuation bias ↓ ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_CONTINUATION_TRYING_WITH_SECONDARY": (
+            f"Continuation bias ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_REVERSION_ACTIVE_WITH_SECONDARY": (
+            f"Reversion active ({representative_tf}) with {secondary_phrase}."
+        ),
+        "TPL_COMPRESSION_COILING_WITH_SECONDARY": (
+            f"Compression coiling ({representative_tf}) with {secondary_phrase}."
+        ),
+    }
+    return templates.get(template_id)
+
+
+def _is_ready_core_row(row: _DistRowState, ready_core_min_bars: int, v_scale_min_samples: int) -> bool:
+    return (
+        row.bars_seen >= ready_core_min_bars
+        and len(row.v_scale_samples) >= v_scale_min_samples
+        and row.atr_l is not None
+    )

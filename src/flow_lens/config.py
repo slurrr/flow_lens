@@ -105,6 +105,12 @@ class DistStateRuntimeConfig:
     token_min_hold_bars_15m: int
     token_min_hold_bars_1h: int
     token_min_hold_bars_4h: int
+    narrative_enabled: bool
+    narrative_driver_tf: Literal["3m", "15m", "1h", "4h"]
+    narrative_linger_reminder_closes: int
+    narrative_max_chars: int
+    narrative_secondary_min_ratio: float
+    narrative_dir_ratio_min: float
 
 
 @dataclass(frozen=True)
@@ -426,6 +432,16 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     dist_state_token_min_hold_bars_15m = dist_state_section.get("token_min_hold_bars_15m", 2)
     dist_state_token_min_hold_bars_1h = dist_state_section.get("token_min_hold_bars_1h", 1)
     dist_state_token_min_hold_bars_4h = dist_state_section.get("token_min_hold_bars_4h", 1)
+    dist_state_narrative_enabled = dist_state_section.get("narrative_enabled", False)
+    dist_state_narrative_driver_tf = dist_state_section.get("narrative_driver_tf", "15m")
+    dist_state_narrative_linger_reminder_closes = dist_state_section.get(
+        "narrative_linger_reminder_closes", 0
+    )
+    dist_state_narrative_max_chars = dist_state_section.get("narrative_max_chars", 72)
+    dist_state_narrative_secondary_min_ratio = dist_state_section.get(
+        "narrative_secondary_min_ratio", 0.50
+    )
+    dist_state_narrative_dir_ratio_min = dist_state_section.get("narrative_dir_ratio_min", 0.20)
     if not isinstance(tbt_window_multiplier, (int, float)):
         raise ValueError("runtime.tbt_window_multiplier must be a number.")
     if not isinstance(update_window_seconds, (int, float)):
@@ -910,6 +926,32 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.dist_state.s_exh_plus_plus must be >= s_exh_plus.")
     if not (float(dist_state_v_neut_min) <= float(dist_state_v_neut_max)):
         raise ValueError("runtime.dist_state.v_neut_min must be <= v_neut_max.")
+    if not isinstance(dist_state_narrative_enabled, bool):
+        raise ValueError("runtime.dist_state.narrative_enabled must be a boolean.")
+    if (
+        not isinstance(dist_state_narrative_driver_tf, str)
+        or dist_state_narrative_driver_tf not in allowed_timeframes
+    ):
+        raise ValueError("runtime.dist_state.narrative_driver_tf must be one of 3m, 15m, 1h, 4h.")
+    if dist_state_narrative_driver_tf not in parsed_timeframes:
+        raise ValueError(
+            "runtime.dist_state.narrative_driver_tf must be one of runtime.dist_state.timeframes."
+        )
+    if (
+        not isinstance(dist_state_narrative_linger_reminder_closes, int)
+        or dist_state_narrative_linger_reminder_closes < 0
+    ):
+        raise ValueError("runtime.dist_state.narrative_linger_reminder_closes must be >= 0.")
+    if not isinstance(dist_state_narrative_max_chars, int) or dist_state_narrative_max_chars < 16:
+        raise ValueError("runtime.dist_state.narrative_max_chars must be >= 16.")
+    if not isinstance(dist_state_narrative_secondary_min_ratio, (int, float)):
+        raise ValueError("runtime.dist_state.narrative_secondary_min_ratio must be a number.")
+    if not isinstance(dist_state_narrative_dir_ratio_min, (int, float)):
+        raise ValueError("runtime.dist_state.narrative_dir_ratio_min must be a number.")
+    if not (0.0 <= float(dist_state_narrative_secondary_min_ratio) <= 1.0):
+        raise ValueError("runtime.dist_state.narrative_secondary_min_ratio must be in [0, 1].")
+    if not (0.0 <= float(dist_state_narrative_dir_ratio_min) <= 1.0):
+        raise ValueError("runtime.dist_state.narrative_dir_ratio_min must be in [0, 1].")
 
     dot_thresholds = _parse_thresholds(
         binning_dot_size_thresholds, "runtime.binning_dot_size_thresholds"
@@ -1112,6 +1154,14 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
             token_min_hold_bars_15m=int(dist_state_token_min_hold_bars_15m),
             token_min_hold_bars_1h=int(dist_state_token_min_hold_bars_1h),
             token_min_hold_bars_4h=int(dist_state_token_min_hold_bars_4h),
+            narrative_enabled=bool(dist_state_narrative_enabled),
+            narrative_driver_tf=cast(
+                Literal["3m", "15m", "1h", "4h"], dist_state_narrative_driver_tf
+            ),
+            narrative_linger_reminder_closes=int(dist_state_narrative_linger_reminder_closes),
+            narrative_max_chars=int(dist_state_narrative_max_chars),
+            narrative_secondary_min_ratio=float(dist_state_narrative_secondary_min_ratio),
+            narrative_dir_ratio_min=float(dist_state_narrative_dir_ratio_min),
         ),
     )
 

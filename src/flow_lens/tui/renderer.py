@@ -32,6 +32,7 @@ class RendererConfig:
     frame_band_inner: float = 0.995
     frame_band_outer: float = 1.005
     show_dev_panel: bool = True
+    dist_narrative_max_chars: int = 72
     control_baseline_center_suppress_band: float = 0.02
     axis_flash_duration_s: float = 0.25
     axis_flash_cooldown_s: float = 0.75
@@ -345,8 +346,25 @@ class Renderer:
 
         if not line_rows:
             return -1
+        table_rows = line_rows
+        narrative_line = _format_dist_narrative_line(
+            dist_snapshot.narrative_text_template,
+            available_width=available_width,
+            max_chars=self._config.dist_narrative_max_chars,
+        )
+        line_rows = list(table_rows)
+        if narrative_line is not None:
+            # Keep a blank spacer row, then center the narrative to table width.
+            table_width = max(len(line) for line in table_rows)
+            centered_narrative = narrative_line.center(table_width)
+            line_rows.extend(["", centered_narrative])
         panel_height = len(line_rows)
         bottom = top + panel_height - 1
+        if bottom >= maxy:
+            # Drop narrative first when space is constrained.
+            line_rows = table_rows
+            panel_height = len(line_rows)
+            bottom = top + panel_height - 1
         if bottom >= maxy:
             return -1
         max_len = max(len(line) for line in line_rows)
@@ -926,6 +944,24 @@ def _fmt_bool(value: bool | None) -> str:
     if value is None:
         return "n/a"
     return "yes" if value else "no"
+
+
+def _format_dist_narrative_line(
+    text: str | None,
+    *,
+    available_width: int,
+    max_chars: int,
+) -> str | None:
+    if not text:
+        return None
+    limit = min(max_chars, available_width)
+    if limit <= 0:
+        return None
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return "." * limit
+    return text[: limit - 3] + "..."
 
 
 def _sign_value(value: float) -> int:

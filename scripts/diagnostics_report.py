@@ -396,6 +396,12 @@ def _load_config_summary(path: Path) -> dict[str, object]:
         "dist_state_token_min_hold_bars_15m",
         "dist_state_token_min_hold_bars_1h",
         "dist_state_token_min_hold_bars_4h",
+        "dist_state_narrative_enabled",
+        "dist_state_narrative_driver_tf",
+        "dist_state_narrative_linger_reminder_closes",
+        "dist_state_narrative_max_chars",
+        "dist_state_narrative_secondary_min_ratio",
+        "dist_state_narrative_dir_ratio_min",
     ]
     return {key: runtime[key] for key in ordered_keys if key in runtime}
 

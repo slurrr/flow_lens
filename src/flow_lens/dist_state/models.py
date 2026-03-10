@@ -7,6 +7,8 @@ DistTimeframe = Literal["3m", "15m", "1h", "4h"]
 DistAvailabilityMode = Literal["strict", "continuous"]
 DistTimeMissingPolicy = Literal["reject"]
 DistRowToken = Literal["COMP", "EXP", "CONT↑", "CONT↓", "EXH↑", "EXH↓", "REVERT", "NEUT"]
+NarrativeScalar = str | int | float | bool | None
+NarrativeParamValue = NarrativeScalar | list[str] | dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -81,3 +83,14 @@ class DistPanelSnapshot:
     last_oi_ts_recv_ms: int | None
     last_oi_value: float | None
     tokens_enabled: bool = False
+    narrative_state_id: str | None = None
+    narrative_template_id: str | None = None
+    narrative_params: dict[str, NarrativeParamValue] | None = None
+    narrative_as_of_close_ms: int | None = None
+    narrative_driver_tf: DistTimeframe | None = None
+    narrative_started_close_ms: int | None = None
+    narrative_age_closes: int | None = None
+    narrative_reason_codes: list[str] | None = None
+    narrative_quality_flags: list[str] | None = None
+    narrative_text_template: str | None = None
+    narrative_text_agent: str | None = None
