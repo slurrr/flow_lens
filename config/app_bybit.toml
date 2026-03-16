@@ -130,6 +130,14 @@ tui_frame_inset_px = 0          # 0 touches edges; higher pulls inward
 tui_frame_band_inner = 0.995    # smaller => thicker 0.995
 tui_frame_band_outer = 1.01    # larger => thicker 1.005
 tui_show_dev_panel = true
+liquidity_rollup_enabled = false
+liquidity_rollup_interval_minutes = 15
+liquidity_rollup_out_dir = "logs/liquidity_rollup"
+liquidity_rollup_poc_bucket_pct = 0.001
+liquidity_rollup_xy_hist_bins = 41
+liquidity_rollup_y_deadband = 0.02
+liquidity_rollup_y_dwell_ms = 2000
+liquidity_rollup_low_event_count = 200
 
 [runtime.hygiene]
 enabled = true

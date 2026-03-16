@@ -81,6 +81,8 @@ class BybitSpotWSAdapter(BaseAdapter):
                             aggressor_side=aggressor_side,
                             effort_value=effort_value,
                             price=price,
+                            base_qty=size,
+                            quote_qty=effort_value,
                             venue_timestamp_ms=venue_ts_ms,
                             trade_id=str(row.get("i")) if row.get("i") is not None else None,
                         )

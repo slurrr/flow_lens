@@ -203,6 +203,14 @@ class AppConfig:
     tui_frame_band_inner: float
     tui_frame_band_outer: float
     tui_show_dev_panel: bool
+    liquidity_rollup_enabled: bool
+    liquidity_rollup_interval_minutes: int
+    liquidity_rollup_out_dir: str
+    liquidity_rollup_poc_bucket_pct: float
+    liquidity_rollup_xy_hist_bins: int
+    liquidity_rollup_y_deadband: float
+    liquidity_rollup_y_dwell_ms: int
+    liquidity_rollup_low_event_count: int
     dist_state: DistStateRuntimeConfig
 
 
@@ -355,6 +363,22 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
     tui_frame_band_inner = runtime_section.get("tui_frame_band_inner", 0.995)
     tui_frame_band_outer = runtime_section.get("tui_frame_band_outer", 1.005)
     tui_show_dev_panel = runtime_section.get("tui_show_dev_panel", True)
+    liquidity_rollup_enabled = runtime_section.get("liquidity_rollup_enabled", False)
+    liquidity_rollup_interval_minutes = runtime_section.get(
+        "liquidity_rollup_interval_minutes", 15
+    )
+    liquidity_rollup_out_dir = runtime_section.get(
+        "liquidity_rollup_out_dir", "logs/liquidity_rollup"
+    )
+    liquidity_rollup_poc_bucket_pct = runtime_section.get(
+        "liquidity_rollup_poc_bucket_pct", 0.001
+    )
+    liquidity_rollup_xy_hist_bins = runtime_section.get("liquidity_rollup_xy_hist_bins", 41)
+    liquidity_rollup_y_deadband = runtime_section.get("liquidity_rollup_y_deadband", 0.02)
+    liquidity_rollup_y_dwell_ms = runtime_section.get("liquidity_rollup_y_dwell_ms", 2000)
+    liquidity_rollup_low_event_count = runtime_section.get(
+        "liquidity_rollup_low_event_count", 200
+    )
     dist_state_section = runtime_section.get("dist_state", {})
     if not isinstance(dist_state_section, dict):
         raise ValueError("runtime.dist_state must be a table.")
@@ -757,6 +781,37 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         raise ValueError("runtime.tui_frame_band_outer must be > runtime.tui_frame_band_inner.")
     if not isinstance(tui_show_dev_panel, bool):
         raise ValueError("runtime.tui_show_dev_panel must be a boolean.")
+    if not isinstance(liquidity_rollup_enabled, bool):
+        raise ValueError("runtime.liquidity_rollup_enabled must be a boolean.")
+    if not isinstance(liquidity_rollup_interval_minutes, int):
+        raise ValueError("runtime.liquidity_rollup_interval_minutes must be an integer.")
+    if liquidity_rollup_interval_minutes != 15:
+        raise ValueError("runtime.liquidity_rollup_interval_minutes must be 15 in v1.")
+    if (
+        not isinstance(liquidity_rollup_out_dir, str)
+        or not liquidity_rollup_out_dir.strip()
+    ):
+        raise ValueError("runtime.liquidity_rollup_out_dir must be a non-empty string.")
+    if not isinstance(liquidity_rollup_poc_bucket_pct, (int, float)):
+        raise ValueError("runtime.liquidity_rollup_poc_bucket_pct must be a number.")
+    if float(liquidity_rollup_poc_bucket_pct) <= 0:
+        raise ValueError("runtime.liquidity_rollup_poc_bucket_pct must be > 0.")
+    if not isinstance(liquidity_rollup_xy_hist_bins, int):
+        raise ValueError("runtime.liquidity_rollup_xy_hist_bins must be an integer.")
+    if liquidity_rollup_xy_hist_bins <= 0:
+        raise ValueError("runtime.liquidity_rollup_xy_hist_bins must be > 0.")
+    if not isinstance(liquidity_rollup_y_deadband, (int, float)):
+        raise ValueError("runtime.liquidity_rollup_y_deadband must be a number.")
+    if float(liquidity_rollup_y_deadband) < 0:
+        raise ValueError("runtime.liquidity_rollup_y_deadband must be >= 0.")
+    if not isinstance(liquidity_rollup_y_dwell_ms, int):
+        raise ValueError("runtime.liquidity_rollup_y_dwell_ms must be an integer.")
+    if liquidity_rollup_y_dwell_ms < 0:
+        raise ValueError("runtime.liquidity_rollup_y_dwell_ms must be >= 0.")
+    if not isinstance(liquidity_rollup_low_event_count, int):
+        raise ValueError("runtime.liquidity_rollup_low_event_count must be an integer.")
+    if liquidity_rollup_low_event_count < 0:
+        raise ValueError("runtime.liquidity_rollup_low_event_count must be >= 0.")
     if not isinstance(dist_state_enabled, bool):
         raise ValueError("runtime.dist_state.enabled must be a boolean.")
     if not isinstance(dist_state_symbol, str) or not dist_state_symbol.strip():
@@ -1083,6 +1138,14 @@ def load_app_config(path: Path | str = Path("config/app.toml")) -> AppConfig:
         tui_frame_band_inner=float(tui_frame_band_inner),
         tui_frame_band_outer=float(tui_frame_band_outer),
         tui_show_dev_panel=bool(tui_show_dev_panel),
+        liquidity_rollup_enabled=bool(liquidity_rollup_enabled),
+        liquidity_rollup_interval_minutes=int(liquidity_rollup_interval_minutes),
+        liquidity_rollup_out_dir=liquidity_rollup_out_dir.strip(),
+        liquidity_rollup_poc_bucket_pct=float(liquidity_rollup_poc_bucket_pct),
+        liquidity_rollup_xy_hist_bins=int(liquidity_rollup_xy_hist_bins),
+        liquidity_rollup_y_deadband=float(liquidity_rollup_y_deadband),
+        liquidity_rollup_y_dwell_ms=int(liquidity_rollup_y_dwell_ms),
+        liquidity_rollup_low_event_count=int(liquidity_rollup_low_event_count),
         dist_state=DistStateRuntimeConfig(
             enabled=bool(dist_state_enabled),
             symbol=normalize_symbol(dist_state_symbol),

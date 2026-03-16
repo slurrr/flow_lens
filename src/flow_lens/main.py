@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from functools import partial
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TextIO
 
@@ -56,6 +57,7 @@ from flow_lens.engine.loop import EngineLoop
 from flow_lens.engine.state_engine import StateEngine, StateSnapshot
 from flow_lens.ingest.hygiene import HygieneConfig, HygieneIngestor, HygieneMetricsEvent
 from flow_lens.models.event import Event
+from flow_lens.rollup import LiquidityRollupConfig, LiquidityRollupObserver
 from flow_lens.symbols import (
     BinanceSymbolResolver,
     QuotePair,
@@ -83,6 +85,7 @@ class RuntimeState:
     bybit_spot_base_to_actual: dict[str, list[str]]
     bybit_perp_base_to_actual: dict[str, list[str]]
     hygiene: HygieneIngestor
+    liquidity_rollup: LiquidityRollupObserver | None
 
 
 @dataclass(frozen=True)
@@ -307,6 +310,16 @@ def _run(
             connect_gate_max_excess_wire_lag_ms=config.hygiene_connect_gate_max_excess_wire_lag_ms,
             connect_gate_hard_max_wire_lag_ms=config.hygiene_connect_gate_hard_max_wire_lag_ms,
             connect_gate_rearm_after_s=config.hygiene_connect_gate_rearm_after_s,
+        ),
+        liquidity_rollup_config=LiquidityRollupConfig(
+            enabled=config.liquidity_rollup_enabled,
+            interval_minutes=config.liquidity_rollup_interval_minutes,
+            out_dir=config.liquidity_rollup_out_dir,
+            poc_bucket_pct=config.liquidity_rollup_poc_bucket_pct,
+            xy_hist_bins=config.liquidity_rollup_xy_hist_bins,
+            y_deadband=config.liquidity_rollup_y_deadband,
+            y_dwell_ms=config.liquidity_rollup_y_dwell_ms,
+            low_event_count=config.liquidity_rollup_low_event_count,
         ),
         coinbase_base_to_actual=_coinbase_base_to_actual(coinbase_product_map),
         bybit_spot_base_to_actual=bybit_spot_base_to_actual,
@@ -557,6 +570,7 @@ def _run(
                 tbt_windows,
                 diagnostics,
                 live_metrics,
+                dist_snapshot=dist_snapshot,
             )
 
         if not reported_missing and now - start_time > 30:
@@ -650,6 +664,9 @@ def _run(
             )
 
         time.sleep(0.001)
+
+    if runtime.liquidity_rollup is not None:
+        runtime.liquidity_rollup.close()
 
 
 def _collect_symbols(config: AppConfig) -> list[str]:
@@ -926,6 +943,7 @@ def _init_runtime(
     selector_recovery_confirm_cycles: int,
     selector_switch_cooldown_cycles: int,
     hygiene_config: HygieneConfig,
+    liquidity_rollup_config: LiquidityRollupConfig,
     coinbase_base_to_actual: dict[str, list[str]],
     bybit_spot_base_to_actual: dict[str, list[str]],
     bybit_perp_base_to_actual: dict[str, list[str]],
@@ -968,6 +986,11 @@ def _init_runtime(
         bybit_spot_base_to_actual=bybit_spot_base_to_actual,
         bybit_perp_base_to_actual=bybit_perp_base_to_actual,
         hygiene=HygieneIngestor(hygiene_config),
+        liquidity_rollup=(
+            LiquidityRollupObserver(liquidity_rollup_config)
+            if liquidity_rollup_config.enabled
+            else None
+        ),
     )
 
 
@@ -1043,6 +1066,8 @@ def _update_state(
     tbt_windows: dict[str, int],
     diagnostics: "DiagnosticLogger | None",
     live_metrics: LiveMetrics | None,
+    *,
+    dist_snapshot: DistPanelSnapshot | None,
 ) -> None:
     for symbol, loop in runtime.loops.items():
         events = runtime.pending[symbol]
@@ -1052,6 +1077,14 @@ def _update_state(
             state = loop.step(events, now_ms, window_override_ms=window_override)
             switch_events = loop.buffer.pop_price_switch_events()
             runtime.last_state[symbol] = state
+            if runtime.liquidity_rollup is not None:
+                runtime.liquidity_rollup.on_tick(
+                    symbol=symbol,
+                    now_ms=now_ms,
+                    events=events,
+                    state=state,
+                    dist_snapshot=dist_snapshot,
+                )
             if live_metrics is not None and state is not None:
                 live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
@@ -1080,6 +1113,14 @@ def _update_state(
             state = loop.step(events, now_ms, window_override_ms=window_override)
             switch_events = loop.buffer.pop_price_switch_events()
             runtime.last_state[symbol] = state
+            if runtime.liquidity_rollup is not None:
+                runtime.liquidity_rollup.on_tick(
+                    symbol=symbol,
+                    now_ms=now_ms,
+                    events=events,
+                    state=state,
+                    dist_snapshot=dist_snapshot,
+                )
             if live_metrics is not None and state is not None:
                 live_metrics.update(symbol, state, now_ms)
             if diagnostics is not None:
@@ -1160,10 +1201,16 @@ def _configure_logging() -> None:
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / "flow_lens.log"
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=1,
+        encoding="utf-8",
+    )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+        handlers=[file_handler],
     )
 
 
@@ -1753,6 +1800,14 @@ def _runtime_config_map(config: AppConfig) -> dict[str, object]:
         "tui_frame_band_inner": config.tui_frame_band_inner,
         "tui_frame_band_outer": config.tui_frame_band_outer,
         "tui_show_dev_panel": config.tui_show_dev_panel,
+        "liquidity_rollup_enabled": config.liquidity_rollup_enabled,
+        "liquidity_rollup_interval_minutes": config.liquidity_rollup_interval_minutes,
+        "liquidity_rollup_out_dir": config.liquidity_rollup_out_dir,
+        "liquidity_rollup_poc_bucket_pct": config.liquidity_rollup_poc_bucket_pct,
+        "liquidity_rollup_xy_hist_bins": config.liquidity_rollup_xy_hist_bins,
+        "liquidity_rollup_y_deadband": config.liquidity_rollup_y_deadband,
+        "liquidity_rollup_y_dwell_ms": config.liquidity_rollup_y_dwell_ms,
+        "liquidity_rollup_low_event_count": config.liquidity_rollup_low_event_count,
         "dist_state_enabled": config.dist_state.enabled,
         "dist_state_symbol": config.dist_state.symbol,
         "dist_state_source_id": config.dist_state.source_id,

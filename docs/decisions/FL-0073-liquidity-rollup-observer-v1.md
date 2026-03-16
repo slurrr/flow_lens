@@ -27,6 +27,48 @@ The rollup observer:
 - produces a compact rollup record that is meaningful even when the dot is highly dynamic,
 - persists rollups as **append-only JSONL** (no database required for v1).
 
+Persistence/ownership constraints:
+
+- Daily JSONL persistence is **single-writer per symbol/output directory**.
+- Concurrent writers must not append to the same daily rollup file.
+- The implementation may include a `run_id` to distinguish writer sessions, but `run_id` is not a substitute for the
+  single-writer lock.
+
+Gap semantics:
+
+- The rollup log is not guaranteed to be contiguous across process downtime.
+- Consumers must derive continuity from interval timestamps (and optionally `run_id`), not from file row order alone.
+
+For implementation convenience, the persisted JSONL object may also include an **aligned combined snapshot** containing
+the liquidity rollup plus optional dist-state context for the same 15m boundary.
+
+This combined logged shape is intentionally **not locked yet**:
+
+- it is a working contract for implementation,
+- fields may be added, renamed, nested differently, or removed during iteration,
+- no schema version field is required yet.
+
+Suggested combined snapshot shape (informal):
+
+- `ts_ms`
+- `symbol`
+- `interval_start_ms`
+- `interval_end_ms`
+- `liquidity_state`
+  - full liquidity rollup object
+- `dist_state` (optional)
+  - latest aligned 15m dist-state snapshot
+  - may include row metrics, row tokens, stack vector, primary/secondary class, and narrative fields
+- `agent_inputs` (optional)
+  - convenience block for non-deterministic consumers
+- `context` (optional)
+  - loose additional market/session context
+
+Implementation intent:
+
+- persist enough raw bounded deterministic context that research and agent iteration can discover the durable schema,
+  rather than over-optimizing query ergonomics before the implementation settles.
+
 ## Rationale
 
 The lens behaves like a continuous impulse seismograph. A single point-in-time snapshot at a cadence (e.g. every 15m)
@@ -44,6 +86,10 @@ Append-only JSONL is the smallest persistence surface that enables:
 - “what happened while I was away?” catch-up,
 - 24h summaries without storing raw trades or bars,
 - later research workflows if desired (e.g. DuckDB over JSONL) without committing the repo to database infrastructure.
+
+Keeping the logged shape evolvable is appropriate at this phase. The project needs clean, transformed, research-ready
+state first; strict schema lock-down can follow once the implementation reveals which fields are actually durable and
+useful.
 
 ## Status
 

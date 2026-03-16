@@ -91,6 +91,20 @@ The interpreter must be deterministic and must update on a fixed cadence:
 - Emit/log a new narrative output only when the **narrative state changes**, or when a configured “linger reminder”
   triggers.
 
+Clarification:
+
+- A change from a non-`None` narrative state to `None` is still a narrative state change and may be emitted/logged as
+  the clearing event.
+- “No narrative” means the resulting payload has no active narrative state/template; it does not imply that the clearing
+  transition itself is suppressed.
+
+Quality/readiness clarification:
+
+- `P_MISSING_DRIVER` / `P_MISSING_ANY` are keyed off rows that are considered `ready_p` for their timeframe while the
+  current evaluated snapshot still has `metrics.p is None`.
+- `ready_p` means the row’s OI/P process is sufficiently initialized overall; it does not guarantee that the current
+  close has a non-null `p` value.
+
 ## Agent-ready extension point (future)
 
 V1 must preserve a stable structured narrative schema so a future agent can:

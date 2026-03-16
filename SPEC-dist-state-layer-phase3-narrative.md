@@ -74,6 +74,13 @@ Emit (for observability and/or downstream consumers that only react to changes) 
 - the computed `narrative_state_id` changes, OR
 - a “linger reminder” fires (optional; see §6).
 
+Important clearing rule:
+
+- A transition from a non-`None` narrative state to `narrative_state_id=None` is still a **state change** and therefore
+  is emitted when emission-on-change is enabled.
+- “Emit no narrative” in this spec means “the resulting payload contains no active narrative state/template,” not
+  “suppress the emitted state-change event that cleared the prior narrative.”
+
 Otherwise, `narrative_state_id`, `narrative_template_id`, `narrative_text_template`, and `narrative_started_close_ms`
 are unchanged. `narrative_age_closes` still advances deterministically as-of `narrative_as_of_close_ms`.
 
@@ -147,7 +154,8 @@ Definitions:
   - `+`: `m = 1.5`
   - `++`: `m = 2.0`
   - `!` does not affect magnitude; it is an instability flag only.
-  - if `token_strength` contains `+!` or `++!`, use the `+`/`++` multiplier and record `instability_present=true`.
+  - if `token_strength` contains `+!` or `++!`, use the `+`/`++` multiplier; the `!` contributes to the instability
+    penalty described below.
 - class mapping from token:
   - `EXP` → `EXP`
   - `EXH↑/EXH↓` → `EXH`
@@ -170,7 +178,7 @@ For each timeframe `tf`:
 Primary/secondary selection (deterministic):
 
 - `primary_score = max(stack_vector.values())`
-- if `primary_score == 0` (all scores 0): emit no narrative and set:
+- if `primary_score == 0` (all scores 0): produce a **no-active-narrative payload** and set:
   - `narrative_state_id=None`
   - `narrative_template_id=None`
   - `narrative_text_template=None`
@@ -228,6 +236,13 @@ Instability penalty (deterministic):
   - `instability_ratio = clamp(instability_weight / denom, 0, 1)`
   - `confidence *= (1 - 0.2 * instability_ratio)`
 - Else no penalty.
+
+Instability surfacing (binding):
+
+- In v1 implementation, instability is recorded **indirectly** through the confidence penalty above.
+- No separate `instability_present` output field is required yet.
+- A future revision may surface an explicit boolean if it proves useful, but v1 should not require it unless the
+  implementation is updated to emit it.
 
 Directional conflict flag (observability; not a separate narrative class in v1):
 
@@ -341,6 +356,15 @@ Quality flags (v1; derived from runtime snapshot only):
 - add `P_MISSING_DRIVER` if driver row `ready_p == true` and `metrics.p is None`.
 - add `P_MISSING_ANY` if any row has `ready_p == true` and `metrics.p is None`.
 - add `DIR_CONFLICT_CONT` / `DIR_CONFLICT_EXH` per conflict detection above.
+
+`ready_p` semantics (important):
+
+- `ready_p` does **not** mean “this row’s current close definitely has a non-null `metrics.p` value.”
+- `ready_p` means the row’s OI/P process is sufficiently initialized for that timeframe (for example, seeded variance and
+  enough observed OI deltas).
+- Therefore `P_MISSING_DRIVER` / `P_MISSING_ANY` are explicitly designed to catch the case where a row is considered
+  P-ready in general, but the current evaluated snapshot still has `metrics.p is None`.
+- This can legitimately occur during startup/alignment on slower timeframes and should not be interpreted as a flag bug.
 
 Metric exception rule:
 

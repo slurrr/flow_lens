@@ -94,6 +94,8 @@ class BinanceSpotWSAdapter(BaseAdapter):
                         aggressor_side=aggressor_side,
                         effort_value=effort_value,
                         price=price_usdt,
+                        base_qty=quantity,
+                        quote_qty=effort_value,
                         venue_timestamp_ms=venue_ts_ms,
                         trade_id=str(data.get("a")) if data.get("a") is not None else None,
                     )

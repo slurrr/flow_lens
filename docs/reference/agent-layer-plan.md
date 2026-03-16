@@ -106,6 +106,14 @@ low narrative confidence
 rapid vector drift  
 liquidity dominance flip
 
+Note:
+
+- `confidence` here is a **non-deterministic agent concept**, not a locked deterministic system field.
+- The agent may infer confidence from raw bounded dist-state metrics, token structure, stack-vector shape, and later
+  research findings.
+- We should preserve the deterministic inputs needed to support that inference, but we do not need to freeze a
+  canonical confidence formula yet.
+
 ---
 
 ## Research Capability
@@ -132,14 +140,29 @@ Example file:
 
 data/events/YYYY-MM-DD.jsonl
 
-Event structure:
+Suggested persisted shape (informal; free to evolve):
 
-timestamp  
-tokens  
-stack\_vector  
-narrative\_state  
-liquidity\_state  
-market\_context
+- `ts_ms`
+- `symbol`
+- `interval_start_ms`
+- `interval_end_ms`
+- `liquidity_state`
+  - full 15m liquidity rollup object
+- `dist_state` (optional)
+  - aligned dist-state snapshot for the same 15m close when available
+  - may include row metrics, row tokens, stack vector, primary/secondary class, and narrative fields
+- `agent_inputs` (optional)
+  - convenience block if we want a prompt-friendly subset or lightly transformed mirrors of deterministic fields
+- `context` (optional)
+  - loose additional market/session context; may be omitted or left sparse in early implementation
+
+Working assumptions:
+
+- This is a **logging shape**, not a locked database schema.
+- No schema version field is required yet.
+- Keys can be added or revised as implementation reveals what is actually useful.
+- The important constraint is boundary alignment: the dist-state snapshot, when present, should line up with the same
+  15m boundary as the liquidity rollup.
 
 Advantages:
 
@@ -255,15 +278,12 @@ to create overlapping memory.
 
 ## Persisted Event
 
-Combined snapshot:
+Combined snapshot intent:
 
-{  
-  ts  
-  tokens  
-  stack\_vector  
-  narrative\_state  
-  liquidity\_state  
-}
+- one append-only JSON object per 15m boundary,
+- liquidity rollup is the anchor object,
+- dist-state and other context blocks are attached when aligned/available,
+- the exact shape is expected to evolve during implementation.
 
 Volume:
 

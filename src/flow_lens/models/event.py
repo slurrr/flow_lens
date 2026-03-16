@@ -15,5 +15,7 @@ class Event:
     aggressor_side: AggressorSide
     effort_value: float
     price: float
+    base_qty: float | None = None
+    quote_qty: float | None = None
     venue_timestamp_ms: int | None = None
     trade_id: str | None = None

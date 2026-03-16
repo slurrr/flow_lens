@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -114,7 +115,13 @@ def _latest_dist_diag_file() -> Path:
         candidates.extend(sorted(replay_dir.glob(pattern)))
     if not candidates:
         raise SystemExit("No dist-state diagnostics/replay files found.")
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    def _name_ts(path: Path) -> str:
+        # Prefer run-start timestamp encoded in filename so "latest run" wins,
+        # even when multiple files are being appended concurrently.
+        match = re.search(r"(\d{8}-\d{6})", path.name)
+        return match.group(1) if match else ""
+
+    return max(candidates, key=lambda p: (_name_ts(p), p.name))
 
 
 def _summary_output_path(input_path: Path) -> Path:

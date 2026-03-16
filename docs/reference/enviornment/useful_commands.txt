@@ -1,0 +1,34 @@
+
+
+Lens-only commands:
+
+- Live capture (lens diagnostics only):
+    - python -m flow_lens.main --config config/app.toml --dia
+- Latest lens diagnostics file:
+    - ls -t logs/flow_lens_diagnostics-*.jsonl* | head -n 1
+- Lens diagnostics report (latest by default):
+    - python scripts/diagnostics_report.py
+- Lens diagnostics report for a specific file:
+    - python scripts/diagnostics_report.py --path logs/flow_lens_diagnostics-YYYYMMDD-HHMMSS-p00.jsonl
+- Lens replay pipeline (from backfill data, not from a live diagnostics file):
+    - python scripts/scenario_replay.py --scenario-file <scenario.json> --config config/app.toml --out-dir logs/replay --gzip
+    - then summarize:
+        - python scripts/diagnostics_report.py --dir logs/replay
+
+
+replay dist-state-only 
+
+- Live capture (dist only):
+    - python -m flow_lens.main --config config/app.toml --dist-dia
+- Replay dist-state diagnostics:
+    - python scripts/dist_state_replay.py --input docs/diagnostics/dist_state_diagnostics-YYYYMMDD-HHMMSS-*.jsonl --config config/app.toml
+- Replay latest dist-state diagnostics (bash helper):
+    - python scripts/dist_state_replay.py --input "$(ls -t docs/diagnostics/dist_state_diagnostics-*.jsonl* | head -n 1)" --config config/app.toml
+- Dist-state summary report (latest by default):
+    - python scripts/dist_state_summary.py
+- Dist-state summary for specific file:
+    - python scripts/dist_state_summary.py --input docs/diagnostics/dist_state_diagnostics-YYYYMMDD-HHMMSS-*.jsonl
+
+
+list runing processes
+ps -ef | rg "flow_lens.main|python -m flow_lens" | rg -v rg

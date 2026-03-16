@@ -57,6 +57,12 @@ class MockAdapter:
                 aggressor_side=effort.aggressor_side,
                 effort_value=effort.effort_value,
                 price=step.price,
+                base_qty=(
+                    effort.effort_value / step.price
+                    if step.price > 0
+                    else None
+                ),
+                quote_qty=effort.effort_value,
             )
             for effort in step.efforts
         ]
