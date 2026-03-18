@@ -85,8 +85,7 @@ quote_mode = "usd_like"
 
 [runtime]
 tbt_window_multiplier = 4.0
-update_window_seconds = 0.69
-
+update_window_seconds = 2.67
 price_selector_policy = "priority_sticky"
 price_selector_stale_failover_ms = 6000
 price_selector_recovery_confirm_cycles = 2
@@ -103,9 +102,9 @@ binning_dot_size_thresholds = [0.35, 0.70]
 binning_halo_thresholds = [0.33, 0.66]
 binning_hysteresis_band = 0.05
 
-tanh_k = 0.38
+tanh_k = 0.27
 
-scale_window_seconds = 300.0
+scale_window_seconds = 240.0
 
 persist_enabled = true
 persist_input = "y_gated"
@@ -129,12 +128,12 @@ persist_dormant_quiet_s = 20.0
 persist_tau_dormant = 45.0
 persist_dormant_effort_norm_threshold = 0.35
 
-disp_scale_multiplier = 0.12    # deadband 0.10
+disp_scale_multiplier = 0.10
 disp_scale_percentile = 0.80
 disp_scale_min_samples = 20
 disp_scale_floor_percentile = 0.0
 
-effort_scale_percentile = 0.45
+effort_scale_percentile = 0.60
 effort_scale_min_samples = 20
 size_scale_percentile = 0.45
 
@@ -155,8 +154,8 @@ control_baseline_midnight_tick_enabled = true
 control_baseline_midnight_tick_min_samples = 60
 control_baseline_midnight_tick_min_elapsed_s = 600.0
 
-effort_floor_multiplier = 0.15    # 0.15
-effort_floor_ticks = 45
+effort_floor_multiplier = 0.15
+effort_floor_ticks = 60
 
 # ---- TUI styling (Braille lens) ----
 # Lens box size bounds in terminal cells (odd values center axes cleanly).
@@ -179,7 +178,7 @@ tui_frame_enabled = true
 tui_frame_inset_px = 0          # 0 touches edges; higher pulls inward
 tui_frame_band_inner = 0.995    # smaller => thicker 0.995
 tui_frame_band_outer = 1.01    # larger => thicker 1.005
-tui_show_dev_panel = false
+tui_show_dev_panel = true
 liquidity_rollup_enabled = true
 liquidity_rollup_interval_minutes = 15
 liquidity_rollup_out_dir = "logs/liquidity_rollup"
